@@ -85,6 +85,99 @@ re-running an ingest is idempotent.
 
 ---
 
+## Data ingestion
+
+The `securities` and `daily_prices` tables are populated from a seed list of the
+50 Nifty constituents (`backend/app/data/nifty50_seed.json`) plus daily OHLCV
+history pulled from Yahoo Finance.
+
+```bash
+# Seed the universe and ingest 10 years of history (default)
+docker compose exec backend python -m app.scripts.run_ingestion
+
+# Shorter window
+docker compose exec backend python -m app.scripts.run_ingestion --years 5
+```
+
+Both steps are **idempotent**. `securities` is upserted on `ticker`, and
+`daily_prices` is upserted on the `(security_id, date)` unique constraint, so
+re-running refreshes existing bars instead of duplicating them.
+
+### Ticker convention
+
+`securities.ticker` holds the bare NSE symbol (`RELIANCE`, `M&M`,
+`BAJAJ-AUTO`). The Yahoo Finance symbol is that plus `.NS`
+(`settings.yfinance_suffix`); the seed file stores the Yahoo form under
+`yf_ticker`. The read endpoints accept either form.
+
+### Adjusted prices
+
+yfinance is called with `auto_adjust=True`, so the OHLC it returns is already
+adjusted for splits and dividends — `Close` *is* the adjusted close. It is
+written to both `close` and `adj_close` so downstream analytics can read
+`adj_close` uniformly without knowing how a row was fetched.
+
+### Short history is expected for some tickers
+
+Not every constituent has ten years of data, and that is correct rather than a
+fetch failure:
+
+| Ticker | Why its history is short |
+|---|---|
+| `TMPV` | Tata Motors Passenger Vehicles began trading under this identity in **October 2025** following the Tata Motors demerger |
+| `ETERNAL`, `INDIGO`, `JIOFIN`, `MAXHEALTH`, `TRENT` | Recent Nifty 50 inclusions that may have listed later than longer-standing members |
+
+These are listed in `KNOWN_SHORT_HISTORY` in
+`backend/app/services/data_ingestion.py` and are flagged in the coverage report
+so a short series never reads as a broken fetch. Any *other* ticker coming back
+with under half the requested window is reported separately, under
+"Unexpectedly short history".
+
+### Known data quality issue: unadjusted corporate actions
+
+`auto_adjust=True` corrects splits and dividends, but **only where Yahoo has
+recorded the action**. Two ingested series contain a price discontinuity that
+Yahoo does not report as a split, so nothing adjusts it away:
+
+| Ticker | Date | Apparent move | What actually happened |
+|---|---|---|---|
+| `TMPV` | 2025-10-14 | −40.2% | Tata Motors demerger. Yahoo carries the pre-demerger parent's history forward under `TMPV.NS`, so spinning off the commercial-vehicles business looks like a 40% loss |
+| `TRENT` | 2026-01-01 | −33.0% | Price level resets by a ~3:2 ratio on *below*-average volume with no split recorded — a corporate action, not a selloff |
+
+Neither is a real return. Left alone they will inflate volatility, distort the
+covariance matrix, and hand the backtester a fake crash. They are declared in
+`UNADJUSTED_CORPORATE_ACTIONS` in `data_ingestion.py` and printed as a warning
+at the end of every coverage report.
+
+**The risk and backtest layers must neutralise these before computing returns**
+— by treating the affected date as a gap in the return series rather than a
+price change, or by rescaling the pre-action history by the break ratio.
+
+Note that `TMPV` therefore has a *full* ten years of data rather than the few
+months its October 2025 listing would suggest: the series is continuous, but
+only the portion after 2025-10-14 describes the passenger-vehicle company.
+
+### Resilience
+
+Each yfinance call is retried 3 times with exponential backoff. If all attempts
+fail the ticker is logged with a clear warning and the run moves on to the next
+one — a single bad ticker never aborts the ingest. Failures are listed at the
+end of the coverage report.
+
+### Verification endpoints
+
+Temporary read-only endpoints, for confirming what landed:
+
+```bash
+# All 50 securities with row counts and date ranges
+curl -s localhost:8000/api/securities | jq '.[0]'
+
+# Daily bars for one ticker (most recent 1000 when no range is given)
+curl -s "localhost:8000/api/securities/RELIANCE/prices?start=2024-01-01&end=2024-03-31" | jq '.count'
+```
+
+---
+
 ## Running locally
 
 ### Prerequisites
@@ -181,8 +274,11 @@ backend/
       config.py       pydantic-settings, reads env vars
       db.py           SQLAlchemy engine + session dependency
     models/           SQLAlchemy 2.0 models (Security, DailyPrice)
-    routers/          HTTP endpoints (health today; features later)
-    services/         business logic — Monte Carlo, optimiser, backtest
+    routers/          HTTP endpoints (health, securities)
+    services/         business logic
+      data_ingestion.py   Nifty 50 seeding + yfinance OHLCV ingestion
+    data/             nifty50_seed.json
+    scripts/          run_ingestion.py (python -m app.scripts.run_ingestion)
   alembic/            migrations
   tests/
 frontend/

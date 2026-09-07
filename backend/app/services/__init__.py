@@ -1,6 +1,8 @@
 """Business logic layer.
 
-Deliberately empty for now. The three planned components live here:
+* ``data_ingestion.py`` -- Nifty 50 seeding and yfinance OHLCV ingestion
+
+Still to come:
 
 * ``montecarlo.py``  -- Monte Carlo simulation of portfolio VaR / CVaR
 * ``optimizer.py``   -- Markowitz mean-variance optimisation (efficient frontier)
