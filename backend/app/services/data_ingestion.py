@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -26,7 +27,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+# Re-exported so existing imports from this module keep working.
+from app.core.tickers import to_nse_symbol, to_yf_symbol
 from app.models import DailyPrice, Security
+from app.services.anomalies import (
+    LARGE_MOVE_THRESHOLD,
+    LargeMove,
+    scan_for_large_moves,
+    seed_price_anomalies,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,32 +52,16 @@ INITIAL_BACKOFF_SECONDS = 2.0
 #: Postgres' 65535 limit (9 columns x 500 = 4500 parameters).
 UPSERT_CHUNK_SIZE = 500
 
-#: Corporate actions that Yahoo did NOT record as splits, so ``auto_adjust=True``
-#: could not adjust them away. Each leaves a raw price discontinuity that reads
-#: as a huge one-day return but reflects no actual gain or loss. Returns-based
-#: analytics (VaR, covariance, backtests) must neutralise these before use --
-#: see the note in the README.
-#:
-#: Verified against the ingested series, not inferred.
-UNADJUSTED_CORPORATE_ACTIONS: dict[str, dict[str, object]] = {
-    "TMPV": {
-        "date": date(2025, 10, 14),
-        "apparent_move": -0.402,
-        "reason": (
-            "Tata Motors demerger: the pre-demerger parent's history is carried "
-            "forward under TMPV.NS, so the split-off of the commercial-vehicles "
-            "business shows up as a -40% day"
-        ),
-    },
-    "TRENT": {
-        "date": date(2026, 1, 1),
-        "apparent_move": -0.330,
-        "reason": (
-            "price level resets by a ~3:2 ratio on below-average volume with no "
-            "split recorded by Yahoo; a corporate action, not a selloff"
-        ),
-    },
+#: The index itself, stored as a security so it shares the ingestion, anomaly
+#: and returns pipeline with every constituent. "^NSEI" is Yahoo's symbol for
+#: the Nifty 50 and needs no ".NS" suffix.
+BENCHMARK_SECURITY: dict[str, str] = {
+    "ticker": "^NSEI",
+    "name": "Nifty 50",
+    "sector": "Index",
+    "exchange": "NSE",
 }
+
 
 #: Constituents whose price history is legitimately shorter than the rest.
 #: Short history for these is expected and must not be read as a fetch failure.
@@ -82,6 +75,7 @@ KNOWN_SHORT_HISTORY: dict[str, str] = {
     # Observed from the ingested data: both series begin at their 2017 listing.
     "SBILIFE": "history begins at its October 2017 listing",
     "HDFCLIFE": "history begins at its November 2017 listing",
+    "^NSEI": "Yahoo's Nifty 50 index history begins in September 2007",
 }
 
 #: A series is called short when it holds less than this share of the requested
@@ -128,8 +122,10 @@ class IngestSummary:
     """Everything :func:`ingest_all` learned, for callers and for printing."""
 
     securities_seeded: int = 0
+    anomalies_seeded: int = 0
     results: list[IngestResult] = field(default_factory=list)
     coverage: list[CoverageRow] = field(default_factory=list)
+    large_moves: list[LargeMove] = field(default_factory=list)
     years_back: int = 10
 
     @property
@@ -146,22 +142,34 @@ class IngestSummary:
 # ---------------------------------------------------------------------------
 
 
-def to_nse_symbol(ticker: str) -> str:
-    """``RELIANCE.NS`` -> ``RELIANCE``. Idempotent."""
-    ticker = ticker.strip().upper()
-    suffix = settings.yfinance_suffix.upper()
-    if suffix and ticker.endswith(suffix):
-        return ticker[: -len(suffix)]
-    return ticker
-
-
-def to_yf_symbol(ticker: str) -> str:
-    """``RELIANCE`` -> ``RELIANCE.NS``. Idempotent."""
-    ticker = ticker.strip().upper()
-    suffix = settings.yfinance_suffix
-    if suffix and ticker.endswith(suffix.upper()):
-        return ticker
-    return f"{ticker}{suffix}"
+def seed_benchmark(db: Session) -> int:
+    """Upsert the benchmark index into ``securities``. Idempotent."""
+    stmt = pg_insert(Security).values(
+        [
+            {
+                "ticker": BENCHMARK_SECURITY["ticker"],
+                "name": BENCHMARK_SECURITY["name"],
+                "sector": BENCHMARK_SECURITY["sector"],
+                "exchange": BENCHMARK_SECURITY["exchange"],
+                "is_active": True,
+                "is_benchmark": True,
+            }
+        ]
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Security.ticker],
+        set_={
+            "name": stmt.excluded.name,
+            "sector": stmt.excluded.sector,
+            "exchange": stmt.excluded.exchange,
+            "is_active": stmt.excluded.is_active,
+            "is_benchmark": stmt.excluded.is_benchmark,
+        },
+    )
+    db.execute(stmt)
+    db.commit()
+    logger.info("Seeded benchmark %s", BENCHMARK_SECURITY["ticker"])
+    return 1
 
 
 def load_seed(path: Path | None = None) -> list[dict[str, str]]:
@@ -189,6 +197,7 @@ def seed_securities(db: Session, path: Path | None = None) -> int:
             "sector": entry["sector"],
             "exchange": settings.default_exchange,
             "is_active": True,
+            "is_benchmark": False,
         }
         for entry in entries
     ]
@@ -201,6 +210,7 @@ def seed_securities(db: Session, path: Path | None = None) -> int:
             "sector": stmt.excluded.sector,
             "exchange": stmt.excluded.exchange,
             "is_active": stmt.excluded.is_active,
+            "is_benchmark": stmt.excluded.is_benchmark,
         },
     )
     db.execute(stmt)
@@ -487,22 +497,49 @@ def format_coverage_report(summary: IngestSummary) -> str:
             for r in unexpected
         ]
 
-    flagged = [
-        r for r in summary.coverage if r.ticker in UNADJUSTED_CORPORATE_ACTIONS
-    ]
-    if flagged:
+    handled = [m for m in summary.large_moves if m.handled]
+    if handled:
         out += [
             "",
-            "! Unadjusted corporate actions -- these dates carry a price break that",
-            "  is NOT a real return. Neutralise before computing VaR/covariance:",
+            "Known large moves -- registered in price_anomalies and neutralised by",
+            "get_daily_returns(). No action needed:",
         ]
-        for row in flagged:
-            action = UNADJUSTED_CORPORATE_ACTIONS[row.ticker]
+        for move in handled:
             out += [
-                f"    {row.ticker:<12} {action['date']}  "
-                f"{float(action['apparent_move']) * 100:+.1f}% apparent",
-                f"    {'':<12} {action['reason']}",
+                f"    {move.ticker:<12} {move.date}  {move.pct_move * 100:+.1f}%"
+                f"  [known, handled]",
+                f"    {'':<12} {move.description}",
             ]
+
+    reviewed = [
+        m for m in summary.large_moves if not m.handled and m.reviewed_genuine
+    ]
+    if reviewed:
+        out += [
+            "",
+            "Reviewed genuine market moves -- kept in the return series on purpose:",
+        ]
+        for move in reviewed:
+            out += [
+                f"    {move.ticker:<12} {move.date}  {move.pct_move * 100:+.1f}%"
+                f"  [reviewed: genuine]",
+                f"    {'':<12} {move.description}",
+            ]
+
+    unhandled = [
+        m for m in summary.large_moves if not m.handled and not m.reviewed_genuine
+    ]
+    if unhandled:
+        out += [
+            "",
+            f"! Unhandled large moves (>{LARGE_MOVE_THRESHOLD:.0%}) not in",
+            "  price_anomalies. Each is either a genuine tail event -- keep it -- or a",
+            "  corporate-action artefact that should be registered. Needs review:",
+        ]
+        out += [
+            f"    {m.ticker:<12} {m.date}  {m.pct_move * 100:+.1f}%"
+            for m in unhandled
+        ]
 
     empty = [r for r in summary.coverage if r.row_count == 0]
     if empty:
@@ -512,6 +549,7 @@ def format_coverage_report(summary: IngestSummary) -> str:
     out += [
         "",
         f"Securities seeded : {summary.securities_seeded}",
+        f"Anomalies seeded  : {summary.anomalies_seeded}",
         f"Rows written      : {summary.total_rows_written:,}",
         f"Tickers succeeded : {len(summary.results) - len(summary.failures)}"
         f"/{len(summary.results)}",
@@ -528,17 +566,49 @@ def format_coverage_report(summary: IngestSummary) -> str:
 # ---------------------------------------------------------------------------
 
 
-def ingest_all(db: Session, years_back: int = 10) -> IngestSummary:
+def ingest_all(
+    db: Session,
+    years_back: int = 10,
+    fetch_prices: bool = True,
+    only_tickers: Sequence[str] | None = None,
+) -> IngestSummary:
     """Seed the universe, fetch every ticker's history, print coverage.
 
     One ticker failing does not stop the run -- the failure is recorded and
     reported at the end.
+
+    With ``fetch_prices=False`` the network is skipped entirely: securities and
+    anomalies are re-seeded and the report is rebuilt from what is already
+    stored. Useful after adding an entry to the anomaly registry.
+
+    ``only_tickers`` restricts the price fetch to a subset (seeding and the
+    report still cover everything), for topping up one security without
+    re-fetching the whole universe.
     """
     summary = IngestSummary(years_back=years_back)
-    summary.securities_seeded = seed_securities(db)
+    summary.securities_seeded = seed_securities(db) + seed_benchmark(db)
 
     securities = db.scalars(select(Security).order_by(Security.ticker)).all()
+
+    if only_tickers:
+        wanted = {to_nse_symbol(t) for t in only_tickers}
+        unknown = wanted - {s.ticker for s in securities}
+        if unknown:
+            raise ValueError(
+                f"Not in securities: {', '.join(sorted(unknown))}"
+            )
+        securities = [s for s in securities if s.ticker in wanted]
+
     total = len(securities)
+
+    if not fetch_prices:
+        logger.info("Skipping price fetch; re-seeding and rebuilding the report")
+        summary.anomalies_seeded = seed_price_anomalies(db)
+        summary.coverage = build_coverage_report(db, years_back)
+        summary.large_moves = scan_for_large_moves(db)
+        print(format_coverage_report(summary), flush=True)
+        return summary
+
     logger.info("Ingesting %d years of history for %d securities", years_back, total)
 
     for position, security in enumerate(securities, start=1):
@@ -565,6 +635,10 @@ def ingest_all(db: Session, years_back: int = 10) -> IngestSummary:
         else:
             print(f"{prefix} FAILED    {result.error}", flush=True)
 
+    # Anomalies reference securities, so they are seeded after the universe
+    # exists; the scan then runs over everything just ingested.
+    summary.anomalies_seeded = seed_price_anomalies(db)
     summary.coverage = build_coverage_report(db, years_back)
+    summary.large_moves = scan_for_large_moves(db)
     print(format_coverage_report(summary), flush=True)
     return summary

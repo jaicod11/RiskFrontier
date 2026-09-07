@@ -10,6 +10,11 @@ from sqlalchemy import func, select
 
 from app.models import DailyPrice, Security
 from app.services import data_ingestion
+from app.services.anomalies import (
+    KNOWN_PRICE_ANOMALIES,
+    LargeMove,
+    load_anomaly_index,
+)
 from app.services.data_ingestion import (
     PriceDownloadError,
     fetch_and_store_prices,
@@ -267,7 +272,8 @@ def test_ingest_all_continues_after_one_ticker_fails(db_session, monkeypatch):
 
     summary = ingest_all(db_session, years_back=10)
 
-    total = len(load_seed())
+    # The universe is the seeded constituents plus the benchmark index.
+    total = len(load_seed()) + 1
     assert summary.securities_seeded == total
     assert len(summary.results) == total
 
@@ -287,7 +293,8 @@ def test_ingest_all_reports_coverage_for_every_security(db_session, monkeypatch)
     summary = ingest_all(db_session, years_back=10)
     coverage = {row.ticker: row for row in summary.coverage}
 
-    assert len(coverage) == len(load_seed())
+    assert len(coverage) == len(load_seed()) + 1  # constituents + benchmark
+    assert data_ingestion.BENCHMARK_SECURITY["ticker"] in coverage
     reliance = coverage["RELIANCE"]
     assert reliance.row_count == 10
     assert reliance.first_date == dt.date(2024, 1, 1)
@@ -313,30 +320,34 @@ def test_coverage_report_renders_table_and_footnotes(db_session, monkeypatch):
     assert "Rows written" in text
 
 
-# --- known data-quality landmines -----------------------------------------
+# --- registry integration --------------------------------------------------
 
 
-def test_unadjusted_corporate_actions_are_declared():
-    """These break returns-based maths, so the constant must stay populated."""
-    actions = data_ingestion.UNADJUSTED_CORPORATE_ACTIONS
-
-    assert "TMPV" in actions
-    assert actions["TMPV"]["date"] == dt.date(2025, 10, 14)
-    assert actions["TMPV"]["apparent_move"] < -0.3
-    assert "demerger" in actions["TMPV"]["reason"]
-
-    for ticker, action in actions.items():
-        assert isinstance(action["date"], dt.date), ticker
-        assert action["reason"], ticker
-
-
-def test_coverage_report_warns_about_unadjusted_actions(db_session, monkeypatch):
+def test_ingest_all_seeds_the_anomaly_registry(db_session, monkeypatch):
     frame = make_ohlcv_frame(dt.date(2024, 1, 1), days=10)
     monkeypatch.setattr(data_ingestion.yf, "download", lambda *a, **k: frame)
 
     summary = ingest_all(db_session, years_back=10)
+
+    assert summary.anomalies_seeded == len(KNOWN_PRICE_ANOMALIES)
+    registered = load_anomaly_index(db_session)
+    assert ("TMPV", dt.date(2025, 10, 14)) in registered
+    assert ("TRENT", dt.date(2026, 1, 1)) in registered
+
+
+def test_coverage_report_separates_handled_from_unhandled(db_session, monkeypatch):
+    """A registered move reads as handled; an unregistered one needs review."""
+    frame = make_ohlcv_frame(dt.date(2024, 1, 1), days=10)
+    monkeypatch.setattr(data_ingestion.yf, "download", lambda *a, **k: frame)
+    summary = ingest_all(db_session, years_back=10)
+
+    summary.large_moves = [
+        LargeMove("TMPV", dt.date(2025, 10, 14), -0.402, True, "demerger"),
+        LargeMove("MYSTERY", dt.date(2026, 5, 4), -0.31, False),
+    ]
     text = data_ingestion.format_coverage_report(summary)
 
-    assert "Unadjusted corporate actions" in text
-    assert "TMPV" in text
-    assert "TRENT" in text
+    assert "known, handled" in text
+    assert "Unhandled large moves" in text
+    assert "MYSTERY" in text
+    assert "Anomalies seeded" in text
