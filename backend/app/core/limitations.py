@@ -49,6 +49,27 @@ EXPECTED_RETURN_ESTIMATION_WARNING = (
     "the frontier is considerably more informative than any single point on it."
 )
 
+# --- Inference and selection -----------------------------------------------
+
+MULTIPLE_COMPARISONS_WARNING = (
+    "When several strategies or parameter settings are tried and the best "
+    "performer is the one reported, its results are biased upward by that "
+    "selection alone — some of the apparent edge is the search, not the "
+    "strategy. The range shown here does not account for how many variants "
+    "were tested before landing on this one, and no correction for that has "
+    "been applied."
+)
+
+OVERLAPPING_WINDOWS_WARNING = (
+    "Rolling windows share most of their underlying data: adjacent windows "
+    "differ by only one month out of several years, so they are not "
+    "independent samples. The resulting interval therefore understates the "
+    "true uncertainty. Read it as a sensitivity range across historical "
+    "periods — how much the answer moves when the start date shifts — and not "
+    "as a confidence interval in the strict statistical sense."
+)
+
+
 # --- Costs and frictions ---------------------------------------------------
 
 TRANSACTION_COST_WARNING = (
@@ -71,6 +92,14 @@ VAR_LIMITATIONS: list[str] = [
 #: Backtesting (`POST /api/backtest/run`).
 BACKTEST_LIMITATIONS: list[str] = [
     HISTORICAL_ESTIMATE_WARNING,
+    TRANSACTION_COST_WARNING,
+    CORRELATION_BREAKDOWN_WARNING,
+]
+
+#: Bootstrapped backtests (`POST /api/backtest/bootstrap`).
+BOOTSTRAP_LIMITATIONS: list[str] = [
+    OVERLAPPING_WINDOWS_WARNING,
+    MULTIPLE_COMPARISONS_WARNING,
     TRANSACTION_COST_WARNING,
     CORRELATION_BREAKDOWN_WARNING,
 ]

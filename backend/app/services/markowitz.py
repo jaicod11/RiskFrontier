@@ -203,14 +203,41 @@ def _solve(
     if best_weights is None:
         return None
 
-    # Clean up float dust so the reported weights satisfy the stated constraints.
     low = np.array([b[0] for b in bounds])
     high = np.array([b[1] for b in bounds])
-    best_weights = np.clip(best_weights, low, high)
-    total = best_weights.sum()
-    if total > 0:
-        best_weights = best_weights / total
-    return np.clip(best_weights, low, high)
+    return _project_to_constraints(best_weights, low, high)
+
+
+def _project_to_constraints(
+    weights: np.ndarray,
+    low: np.ndarray,
+    high: np.ndarray,
+    tolerance: float = 1e-12,
+    max_iterations: int = 100,
+) -> np.ndarray:
+    """Nudge float dust back onto {sum == 1, low <= w <= high}.
+
+    Naive cleanup cannot do both at once: normalising can push a weight past
+    its cap, and clipping afterwards then drops the sum below 1. Instead the
+    remaining gap is distributed in proportion to each weight's *remaining
+    room*, and the result re-clipped, until both constraints hold.
+    """
+    projected = np.clip(weights, low, high)
+
+    for _ in range(max_iterations):
+        gap = 1.0 - float(projected.sum())
+        if abs(gap) <= tolerance:
+            return projected
+
+        # Only weights with headroom in the needed direction can absorb the gap.
+        room = (high - projected) if gap > 0 else (projected - low)
+        capacity = float(room.sum())
+        if capacity <= tolerance:
+            break  # Constraints cannot be satisfied; caller validates.
+
+        projected = np.clip(projected + gap * (room / capacity), low, high)
+
+    return projected
 
 
 def _sum_to_one_constraint() -> dict:

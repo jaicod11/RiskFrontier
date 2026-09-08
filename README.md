@@ -531,6 +531,98 @@ docker compose exec backend python -m app.scripts.run_ingestion --tickers '^NSEI
 
 ---
 
+## Bootstrapped backtests
+
+`POST /api/backtest/bootstrap` runs the strategy and both baselines over many
+windows and reports the distribution, because a single backtest is one draw.
+
+### Walk-forward re-optimisation
+
+`walk_forward_optimized_strategy` plugs into the Phase 5 `rebalance_fn` seam —
+`backtest.py` is unchanged. At each rebalance it calls the Phase 4 optimiser on
+the trailing `lookback_days`.
+
+The tricky part is where that trailing history comes from. The engine only hands
+a strategy data from the backtest's own window, so at day one there is nothing to
+fit. Rather than let the strategy hold the full price matrix and slice it by date
+— which works, but leaves the door open — it is constructed with a **warmup frame
+ending strictly before the backtest's first day**. The future is not in any
+object it holds, so it cannot leak. A backtest start without a full lookback
+behind it raises `InsufficientLookbackError`, naming required versus available.
+
+An optimiser failure holds the previous weights and is counted, never crashing
+the run. Turnover is reported because re-optimising trades **4.4× more** than a
+constant mix (27.1% vs 6.1% of the book per rebalance), and that cost should be
+visible rather than inferred.
+
+### Two methods
+
+**`rolling_windows`** (primary) runs every `window_years` window in the data,
+stepping the start one month at a time.
+
+**`block_bootstrap`** (secondary) resamples *blocks* of consecutive days
+(geometric lengths, ~21-day mean) rather than individual days. Equity volatility
+clusters: a crash is a run of bad days, not one bad day. Resampling days
+independently gives the right unconditional variance but no persistence, so
+drawdowns come out far shallower than anything real and the intervals are
+falsely narrow. A test asserts the block method retains materially more
+autocorrelation in |returns| than i.i.d. resampling of the same series.
+
+Everything is **paired**: within each window all three series are measured over
+identical data. A strategy distribution compared against a single-window
+baseline number would mostly measure the period, not the strategy.
+
+### Results — 10 large caps, 5-year windows, 15 bps
+
+```
+(a) CONSTANT-MIX, monthly            (b) WALK-FORWARD max-Sharpe
+    61 windows, 6.1% turnover            37 windows, 27.1% turnover, 0 failures
+
+    CAGR    p5 14.42  med 21.02        CAGR    p5 17.76  med 22.31
+    Sharpe  p5  0.62  med  0.87        Sharpe  p5  0.67  med  0.89
+    MaxDD              med -33.38      MaxDD              med -30.07
+
+    win vs Nifty50  CAGR 100%          win vs Nifty50  CAGR 100%
+    win vs hold     CAGR  64%          win vs hold     CAGR  84% / Sharpe 41%
+```
+
+Head-to-head on the 36 windows both ran (medians):
+
+| | CAGR | Sharpe | Sortino | MaxDD |
+|---|---|---|---|---|
+| constant-mix | 22.15% | **0.930** | **1.282** | **−22.14%** |
+| walk-forward | **22.35%** | 0.901 | 1.282 | −25.14% |
+| hold same stocks | 21.62% | 0.881 | 1.237 | −22.96% |
+| Nifty 50 | 14.79% | 0.498 | 0.670 | −24.95% |
+
+**Walk-forward re-optimisation did not pay for itself.** It won on CAGR in 67%
+of windows but on Sharpe in only 36% — it bought ~0.2pp of return with more risk,
+3pp deeper median drawdowns, and 4.4× the turnover. The simpler constant mix was
+better risk-adjusted.
+
+> **The 100% win rate against the Nifty 50 is survivorship bias, not skill.**
+> The universe is ten *current* index constituents, chosen in 2026 and backtested
+> from 2016. Names that fell out of the index over that decade are absent by
+> construction, so the basket was selected on the outcome being measured. Neither
+> strategy has been shown to beat the index; a survivorship-free test needs
+> historical index membership, which this project does not yet ingest.
+
+### Limitations
+
+`OVERLAPPING_WINDOWS_WARNING` — adjacent windows differ by one month out of five
+years, so they are not independent samples. The interval understates true
+uncertainty; read it as a sensitivity range across periods, not a confidence
+interval.
+
+`MULTIPLE_COMPARISONS_WARNING` — testing several strategies and reporting the
+best biases the result upward by the selection itself, and nothing here corrects
+for how many variants were tried.
+
+Both carry forward alongside `TRANSACTION_COST_WARNING` and
+`CORRELATION_BREAKDOWN_WARNING`.
+
+---
+
 ## Running locally
 
 ### Prerequisites
@@ -630,14 +722,16 @@ backend/
       db.py           SQLAlchemy engine + session dependency
     models/           SQLAlchemy 2.0 models (Security, DailyPrice, PriceAnomaly)
     routers/          HTTP endpoints (health, securities, risk, portfolio, backtest)
-    schemas/          Pydantic models (portfolio, risk, optimizer, backtest)
+    schemas/          Pydantic models (portfolio, risk, optimizer, backtest, bootstrap)
     services/         business logic
       data_ingestion.py   Nifty 50 seeding + yfinance OHLCV ingestion
       anomalies.py        price-anomaly registry, seeding and scanning
       returns.py          get_daily_returns — MANDATORY for all returns
       monte_carlo.py      parametric + historical-bootstrap VaR/CVaR
       markowitz.py        mean-variance optimisation, efficient frontier
-      backtest.py         day-by-day engine, strategies, baselines, metrics
+      backtest.py         day-by-day engine, baselines, metrics
+      strategies.py       walk-forward re-optimisation, turnover
+      bootstrap.py        rolling windows + stationary block bootstrap
     data/             nifty50_seed.json
     scripts/          run_ingestion.py (python -m app.scripts.run_ingestion)
   alembic/            migrations

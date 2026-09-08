@@ -303,3 +303,51 @@ def test_short_selling_permits_negative_weights():
     assert weights.sum() == pytest.approx(1.0, abs=1e-6)
     assert (weights >= -0.6 - 1e-9).all()
     assert (weights <= 0.6 + 1e-9).all()
+
+
+# --- constraint projection (regression) -------------------------------------
+
+
+def test_projection_satisfies_both_constraints_together():
+    """Regression: normalising can breach the cap, clipping can break the sum.
+
+    Found by the block bootstrap, which fed the optimiser synthetic data whose
+    solution sat hard against the cap. Naive cleanup returned weights summing
+    to 0.89, which the backtest engine correctly rejected.
+    """
+    from app.services.markowitz import _project_to_constraints
+
+    low = np.zeros(5)
+    high = np.full(5, 0.35)
+
+    for raw in (
+        np.array([0.9, 0.9, 0.05, 0.0, 0.0]),      # far over the cap
+        np.array([0.35, 0.35, 0.02, 0.01, 0.0]),   # sums under 1, two at the cap
+        np.array([0.0, 0.0, 0.0, 0.0, 0.0]),       # degenerate
+        np.array([0.2, 0.2, 0.2, 0.2, 0.2]),       # already feasible
+    ):
+        projected = _project_to_constraints(raw, low, high)
+        assert projected.sum() == pytest.approx(1.0, abs=1e-9), raw
+        assert (projected <= 0.35 + 1e-12).all(), raw
+        assert (projected >= -1e-12).all(), raw
+
+
+def test_solver_output_always_sums_to_one_at_a_binding_cap():
+    """The case that produced the bug: the optimum wants more than the cap."""
+    rng = np.random.default_rng(17)
+    n = 900
+    frame = pd.DataFrame(
+        {
+            "A": rng.normal(0.0030, 0.008, n),   # dominant
+            "B": rng.normal(0.0028, 0.009, n),   # nearly as good
+            "C": rng.normal(0.0001, 0.020, n),
+            "D": rng.normal(0.0000, 0.022, n),
+        },
+        index=pd.bdate_range("2019-01-01", periods=n, name="date"),
+    )
+    for cap in (0.3, 0.35, 0.4):
+        for solver in (min_variance_portfolio, max_sharpe_portfolio):
+            point = solver(frame, max_weight_per_asset=cap)
+            weights = np.array(list(point.weights.values()))
+            assert weights.sum() == pytest.approx(1.0, abs=1e-9)
+            assert weights.max() <= cap + 1e-9
