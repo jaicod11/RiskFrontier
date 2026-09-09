@@ -49,6 +49,34 @@ EXPECTED_RETURN_ESTIMATION_WARNING = (
     "the frontier is considerably more informative than any single point on it."
 )
 
+# --- Universe construction -------------------------------------------------
+
+SURVIVORSHIP_BIAS_WARNING = (
+    "The ticker universe is chosen by the user from today's Nifty 50 "
+    "constituents. Any backtest starting before today therefore excludes every "
+    "company that left the index during the period — the failures, the "
+    "delistings, the names that fell out after sustained underperformance — "
+    "while including companies selected precisely because they survived to be "
+    "in the index now. The basket has been picked using knowledge of the "
+    "outcome being measured. Comparisons against the Nifty 50 benchmark are "
+    "biased in the strategy's favour as a direct result, and must not be read "
+    "as evidence of skill. A strategy beating the index here has demonstrated "
+    "nothing except that hand-picked survivors outperformed."
+)
+
+
+BENCHMARK_PRICE_INDEX_WARNING = (
+    "The strategy's returns include dividends but the benchmark's do not. "
+    "Constituent prices are fetched with dividend and split adjustment, so "
+    "holding a stock earns its dividends; ^NSEI is the Nifty 50 *price* index, "
+    "which excludes them entirely (the dividend-inclusive Nifty 50 TRI is a "
+    "separate series this project does not ingest). The benchmark is therefore "
+    "understated by roughly the index dividend yield, compounding over the "
+    "whole period — a gap of a percentage point or more per year, in the "
+    "strategy's favour, before any strategy decision is made."
+)
+
+
 # --- Inference and selection -----------------------------------------------
 
 MULTIPLE_COMPARISONS_WARNING = (
@@ -72,12 +100,25 @@ OVERLAPPING_WINDOWS_WARNING = (
 
 # --- Costs and frictions ---------------------------------------------------
 
-TRANSACTION_COST_WARNING = (
-    "No transaction costs are modelled. Moving from a current portfolio to "
+#: For endpoints that produce target weights but simulate no trading.
+TRANSACTION_COST_NOT_MODELLED_WARNING = (
+    "No transaction costs are modelled here. Moving from a current portfolio to "
     "these target weights would incur brokerage, STT, exchange fees, and "
-    "market impact, none of which are reflected in the returns shown. The "
+    "market impact, none of which are reflected in the figures shown. The "
     "more the target differs from what is already held, the larger the gap "
     "between these figures and a realisable result."
+)
+
+#: For endpoints that DO simulate trading, at a flat per-leg rate.
+TRANSACTION_COST_MODEL_WARNING = (
+    "Transaction costs are modelled as a flat 15 basis points per trade leg, "
+    "which approximates STT, exchange transaction charges, SEBI turnover fees, "
+    "stamp duty and GST for a delivery trade through an Indian discount broker. "
+    "It excludes brokerage beyond that, capital gains tax entirely, and any "
+    "market impact or slippage beyond the flat rate — a real book pays more "
+    "than this, not less, and a high-turnover strategy pays disproportionately "
+    "more. Costs also do not scale with order size here, so the figures "
+    "flatter large portfolios trading less liquid names."
 )
 
 
@@ -89,18 +130,24 @@ VAR_LIMITATIONS: list[str] = [
     CORRELATION_BREAKDOWN_WARNING,
 ]
 
-#: Backtesting (`POST /api/backtest/run`).
+#: Backtesting (`POST /api/backtest/run`). Carries the survivorship warning
+#: because the response compares the strategy against the Nifty 50.
 BACKTEST_LIMITATIONS: list[str] = [
+    SURVIVORSHIP_BIAS_WARNING,
+    BENCHMARK_PRICE_INDEX_WARNING,
     HISTORICAL_ESTIMATE_WARNING,
-    TRANSACTION_COST_WARNING,
+    TRANSACTION_COST_MODEL_WARNING,
     CORRELATION_BREAKDOWN_WARNING,
 ]
 
-#: Bootstrapped backtests (`POST /api/backtest/bootstrap`).
+#: Bootstrapped backtests (`POST /api/backtest/bootstrap`). Carries the
+#: survivorship warning: the win-rate-vs-index figure is its headline number.
 BOOTSTRAP_LIMITATIONS: list[str] = [
+    SURVIVORSHIP_BIAS_WARNING,
+    BENCHMARK_PRICE_INDEX_WARNING,
     OVERLAPPING_WINDOWS_WARNING,
     MULTIPLE_COMPARISONS_WARNING,
-    TRANSACTION_COST_WARNING,
+    TRANSACTION_COST_MODEL_WARNING,
     CORRELATION_BREAKDOWN_WARNING,
 ]
 
@@ -108,5 +155,5 @@ BOOTSTRAP_LIMITATIONS: list[str] = [
 OPTIMIZER_LIMITATIONS: list[str] = [
     EXPECTED_RETURN_ESTIMATION_WARNING,
     CORRELATION_BREAKDOWN_WARNING,
-    TRANSACTION_COST_WARNING,
+    TRANSACTION_COST_NOT_MODELLED_WARNING,
 ]

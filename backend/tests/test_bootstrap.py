@@ -432,3 +432,49 @@ def test_bad_weights_rejected(client):
         strategy={"kind": "constant_mix", "target_weights": {"RELIANCE": 0.9}},
     )
     assert response.status_code == 422
+
+
+def test_survivorship_warning_is_attached_to_the_bootstrap_response(client):
+    """The win-rate-vs-index headline is exactly what this warning qualifies."""
+    from app.core.limitations import SURVIVORSHIP_BIAS_WARNING
+
+    response = _post(client)
+    if response.status_code == 422:
+        pytest.skip("database not ingested")
+
+    limitations = response.json()["limitations"]
+    assert SURVIVORSHIP_BIAS_WARNING in limitations
+    assert limitations[0] == SURVIVORSHIP_BIAS_WARNING
+
+
+def test_survivorship_warning_only_where_the_benchmark_is_compared(client):
+    """VaR and the optimiser make no index comparison, so they must not carry it."""
+    from app.core.limitations import (
+        BACKTEST_LIMITATIONS,
+        BOOTSTRAP_LIMITATIONS,
+        OPTIMIZER_LIMITATIONS,
+        SURVIVORSHIP_BIAS_WARNING,
+        VAR_LIMITATIONS,
+    )
+
+    assert SURVIVORSHIP_BIAS_WARNING in BACKTEST_LIMITATIONS
+    assert SURVIVORSHIP_BIAS_WARNING in BOOTSTRAP_LIMITATIONS
+    assert SURVIVORSHIP_BIAS_WARNING not in VAR_LIMITATIONS
+    assert SURVIVORSHIP_BIAS_WARNING not in OPTIMIZER_LIMITATIONS
+
+
+def test_benchmark_price_index_warning_accompanies_index_comparisons():
+    """^NSEI excludes dividends while constituent returns include them."""
+    from app.core.limitations import (
+        BACKTEST_LIMITATIONS,
+        BENCHMARK_PRICE_INDEX_WARNING,
+        BOOTSTRAP_LIMITATIONS,
+        OPTIMIZER_LIMITATIONS,
+        VAR_LIMITATIONS,
+    )
+
+    assert BENCHMARK_PRICE_INDEX_WARNING in BACKTEST_LIMITATIONS
+    assert BENCHMARK_PRICE_INDEX_WARNING in BOOTSTRAP_LIMITATIONS
+    assert BENCHMARK_PRICE_INDEX_WARNING not in VAR_LIMITATIONS
+    assert BENCHMARK_PRICE_INDEX_WARNING not in OPTIMIZER_LIMITATIONS
+    assert "price* index" in BENCHMARK_PRICE_INDEX_WARNING

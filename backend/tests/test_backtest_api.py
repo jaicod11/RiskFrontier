@@ -12,7 +12,7 @@ from app.core.limitations import (
     BACKTEST_LIMITATIONS,
     CORRELATION_BREAKDOWN_WARNING,
     HISTORICAL_ESTIMATE_WARNING,
-    TRANSACTION_COST_WARNING,
+    TRANSACTION_COST_MODEL_WARNING,
 )
 from app.models import DailyPrice, Security
 from app.services.backtest import (
@@ -325,7 +325,7 @@ def test_limitations_come_from_the_shared_module(client):
 
     limitations = response.json()["limitations"]
     assert limitations == BACKTEST_LIMITATIONS
-    assert TRANSACTION_COST_WARNING in limitations
+    assert TRANSACTION_COST_MODEL_WARNING in limitations
     assert CORRELATION_BREAKDOWN_WARNING in limitations
     assert HISTORICAL_ESTIMATE_WARNING in limitations
     joined = " ".join(limitations).lower()
@@ -430,3 +430,22 @@ def test_engine_accepts_a_custom_strategy_over_real_data(ingested_db):
     baseline = run_backtest(prices, constant_mix_strategy(
         {t: 1.0 / len(tickers) for t in tickers}), CAPITAL, schedule)
     assert run.values.iloc[-1] != baseline.values.iloc[-1]
+
+
+def test_survivorship_warning_is_attached_to_the_backtest_response(client):
+    """Any response comparing against the index must carry it."""
+    from app.core.limitations import SURVIVORSHIP_BIAS_WARNING
+
+    response = _post(client)
+    if response.status_code == 422:
+        pytest.skip("database not ingested")
+
+    limitations = response.json()["limitations"]
+    assert SURVIVORSHIP_BIAS_WARNING in limitations
+    # It is the first thing shown, because it undercuts the headline comparison.
+    assert limitations[0] == SURVIVORSHIP_BIAS_WARNING
+
+    text = SURVIVORSHIP_BIAS_WARNING.lower()
+    assert "today's nifty 50 constituents" in text
+    assert "left the index" in text
+    assert "not be read as evidence of skill" in text

@@ -11,7 +11,7 @@ from app.core.limitations import (
     CORRELATION_BREAKDOWN_WARNING,
     EXPECTED_RETURN_ESTIMATION_WARNING,
     OPTIMIZER_LIMITATIONS,
-    TRANSACTION_COST_WARNING,
+    TRANSACTION_COST_NOT_MODELLED_WARNING,
     VAR_LIMITATIONS,
 )
 from app.models import Security
@@ -100,7 +100,7 @@ def test_limitations_come_from_the_shared_module(client):
     limitations = response.json()["limitations"]
     assert limitations == OPTIMIZER_LIMITATIONS
     assert EXPECTED_RETURN_ESTIMATION_WARNING in limitations
-    assert TRANSACTION_COST_WARNING in limitations
+    assert TRANSACTION_COST_NOT_MODELLED_WARNING in limitations
     # Shared wording, defined once.
     assert CORRELATION_BREAKDOWN_WARNING in limitations
     assert CORRELATION_BREAKDOWN_WARNING in VAR_LIMITATIONS

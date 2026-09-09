@@ -2,9 +2,16 @@
 
 A portfolio risk and backtesting workbench for **NSE (India) listed equities**.
 
-> **Status: scaffold.** This repository currently contains project structure,
-> configuration, database schema and a working health check only. None of the
-> three analytical components below are implemented yet.
+> **Status: backend complete, frontend is still the Phase 0 scaffold.**
+> All three analytical components are implemented and tested — Monte Carlo
+> VaR/CVaR, Markowitz optimisation, and backtesting with bootstrapped
+> confidence ranges — over 10 years of ingested NSE data. The React app is
+> still the placeholder from the initial scaffold.
+>
+> **Read [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before quoting any number
+> from this project.** Several of the caveats there are large enough to reverse
+> a conclusion — notably survivorship bias, which fully accounts for the 100%
+> win rate against the index.
 
 ---
 
@@ -742,6 +749,30 @@ frontend/
     components/       Layout, HealthStatus
     pages/            PortfolioBuilder ("/"), Results ("/results")
 ```
+
+## Limitations
+
+Every caveat this project has accumulated is consolidated in
+**[docs/LIMITATIONS.md](docs/LIMITATIONS.md)** — fourteen entries, each with the
+concrete number that demonstrates it, why it exists, what it means for reading a
+result, and what would be needed to fix it properly.
+
+The API returns the relevant subset on every analytical response, composed from
+[`backend/app/core/limitations.py`](backend/app/core/limitations.py), so the
+caveats travel with the numbers they qualify rather than living only in docs.
+
+Six of the fourteen push in the same direction — they flatter the strategy
+relative to the benchmark — and they compound. The two that matter most:
+
+- **Survivorship bias.** The universe is today's Nifty 50 constituents, so any
+  backtest starting earlier excludes every company that left the index. This
+  fully accounts for the 100% win-vs-index rate. **Nothing here demonstrates
+  that any strategy beats the index.**
+- **The benchmark excludes dividends.** Constituent prices are total-return;
+  `^NSEI` is a price index. ITC returned +5.37% in 2024 adjusted versus +1.91%
+  unadjusted — the benchmark is understated by roughly the index dividend yield,
+  compounding, before any strategy decision is made.
+
 
 ## Notes
 
