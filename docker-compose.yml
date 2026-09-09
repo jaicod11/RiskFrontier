@@ -23,6 +23,9 @@ services:
   backend:
     build:
       context: ./backend
+      args:
+        # Local development runs the test suite inside this container.
+        INSTALL_DEV: "true"
     container_name: prt-backend
     depends_on:
       db:

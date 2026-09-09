@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { listSecurities } from "../api/endpoints";
 import type { SecuritySummary } from "../api/types";
+import { ColdStartBanner } from "../components/ColdStart";
 import { ErrorBanner, RunningNotice } from "../components/states";
 import { TickerPicker } from "../components/TickerPicker";
 import { Button, Field, NumberInput, Panel, Select, TextInput } from "../components/ui";
@@ -99,13 +100,19 @@ export default function PortfolioBuilder() {
 
       {loadError && <ErrorBanner error={loadError} />}
       {runs.error && <ErrorBanner error={runs.error} onDismiss={runs.clearError} />}
-      {busy && (
-        <RunningNotice
-          label={runs.stage}
-          detail={RUN_DETAIL[runs.running!]}
-          elapsedSeconds={runs.elapsedSeconds}
-        />
-      )}
+      {busy &&
+        (runs.isColdStart ? (
+          <ColdStartBanner
+            elapsedSeconds={runs.elapsedSeconds}
+            context="request"
+          />
+        ) : (
+          <RunningNotice
+            label={runs.stage}
+            detail={RUN_DETAIL[runs.running!]}
+            elapsedSeconds={runs.elapsedSeconds}
+          />
+        ))}
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
         <Panel

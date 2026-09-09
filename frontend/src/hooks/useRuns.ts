@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/client";
 import { optimize, runBacktest, runBootstrap, runVar } from "../api/endpoints";
+import { useHealthStore } from "../store/health";
 import {
   toWeightFractions,
   usePortfolio,
@@ -31,6 +32,10 @@ function portfolioBody(holdings: Holding[], params: RunParams) {
 
 export function useRuns() {
   const { holdings, params, setResult } = usePortfolio();
+  // If health has not come back yet, the instance is probably still booting
+  // and this request is what will wake it — say so rather than showing the
+  // ordinary "simulating" note for a minute.
+  const { isAwake } = useHealthStore();
   const [state, setState] = useState<RunState>({
     running: null,
     stage: "",
@@ -182,7 +187,15 @@ export function useRuns() {
     }
   }, [holdings, params, setResult]);
 
-  return { ...state, risk, optimize: optimizeRun, backtest, clearError };
+  return {
+    ...state,
+    risk,
+    optimize: optimizeRun,
+    backtest,
+    clearError,
+    /** True when this run is also paying for the backend's cold start. */
+    isColdStart: state.running !== null && !isAwake,
+  };
 }
 
 /** Copy for the progress note, per run kind. */

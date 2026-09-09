@@ -2,10 +2,28 @@ import axios, { AxiosError } from "axios";
 import type { ErrorResponse } from "./types";
 
 /**
- * Base URL of the FastAPI backend, configured through VITE_API_BASE_URL.
+ * Base URL of the FastAPI backend, from VITE_API_BASE_URL.
+ *
+ * The localhost fallback applies to development only. A production build with
+ * the variable unset would otherwise point every visitor's browser at their own
+ * machine and fail with an opaque network error, so that case fails loudly at
+ * module load instead — a broken deploy should be obvious, not mysterious.
  */
-export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+function resolveBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_BASE_URL;
+  if (configured) return configured;
+
+  if (import.meta.env.PROD) {
+    throw new Error(
+      "VITE_API_BASE_URL is not set. A production build needs the deployed " +
+        "backend URL at build time — set it in the Vercel project settings " +
+        "and redeploy.",
+    );
+  }
+  return "http://localhost:8000";
+}
+
+export const API_BASE_URL = resolveBaseUrl();
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,

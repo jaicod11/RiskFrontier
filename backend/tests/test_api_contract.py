@@ -474,3 +474,92 @@ def test_error_responses_are_documented_as_the_error_model(client):
             assert response_422, f"{method.upper()} {path} does not document 422"
             body = str(response_422.get("content", {}))
             assert "ErrorResponse" in body, f"{method.upper()} {path} 422 is untyped"
+
+
+# --- production budgets -----------------------------------------------------
+
+
+def test_walk_forward_block_bootstrap_is_budgeted_separately(client):
+    """The one combination that cannot reuse the optimiser cache.
+
+    It must be refused above budget with an actionable message rather than
+    accepted and left to time out at the proxy.
+    """
+    from app.core.limits import MAX_WALK_FORWARD_BLOCK_RESAMPLES
+
+    body = {
+        "tickers": ["RELIANCE", "TCS", "HDFCBANK"],
+        "strategy": {"kind": "walk_forward", "objective": "max_sharpe"},
+        "method": "block_bootstrap",
+        "n_resamples": MAX_WALK_FORWARD_BLOCK_RESAMPLES + 1,
+        "window_years": 3.0,
+    }
+    payload = _assert_error_contract(
+        client.post("/api/backtest/bootstrap", json=body), 422,
+        "REQUEST_LIMIT_EXCEEDED",
+    )
+    assert payload["details"]["limit"] == MAX_WALK_FORWARD_BLOCK_RESAMPLES
+    assert payload["details"]["strategy_kind"] == "walk_forward"
+    # The message must name the cheaper alternative, not just say "no".
+    assert "rolling_windows" in payload["message"]
+
+
+def test_constant_mix_block_bootstrap_keeps_the_higher_budget(client):
+    """Only the expensive combination is restricted."""
+    from app.core.limits import MAX_WALK_FORWARD_BLOCK_RESAMPLES
+
+    body = {
+        "tickers": ["RELIANCE", "TCS", "HDFCBANK"],
+        "strategy": {
+            "kind": "constant_mix",
+            "target_weights": {"RELIANCE": 0.34, "TCS": 0.33, "HDFCBANK": 0.33},
+        },
+        "method": "block_bootstrap",
+        "n_resamples": MAX_WALK_FORWARD_BLOCK_RESAMPLES + 1,
+        "window_years": 3.0,
+        "include_windows": False,
+    }
+    response = client.post("/api/backtest/bootstrap", json=body)
+    # Either it runs, or it fails for a reason other than this budget.
+    if response.status_code == 422:
+        assert response.json()["details"].get("limit") != MAX_WALK_FORWARD_BLOCK_RESAMPLES
+
+
+def test_request_budgets_are_environment_configurable(monkeypatch):
+    """Production lowers these; local development keeps the generous defaults."""
+    from app.core.config import Settings
+
+    generous = Settings()
+    assert generous.max_n_sims == 200_000
+
+    monkeypatch.setenv("MAX_N_SIMS", "25000")
+    monkeypatch.setenv("MAX_WALK_FORWARD_BLOCK_RESAMPLES", "15")
+    constrained = Settings()
+    assert constrained.max_n_sims == 25_000
+    assert constrained.max_walk_forward_block_resamples == 15
+
+
+def test_localhost_origins_do_not_leak_into_production(monkeypatch):
+    """The dev CORS default must not survive into a production deployment."""
+    from app.core.config import Settings
+
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@host/db")
+    monkeypatch.setenv("CORS_ORIGIN_REGEX", r"https://.*\.vercel\.app")
+    monkeypatch.delenv("CORS_ORIGINS", raising=False)
+
+    production = Settings()
+    assert production.cors_origin_list == []
+    assert production.cors_origin_regex
+
+    # Explicitly configured origins are still honoured.
+    monkeypatch.setenv("CORS_ORIGINS", "https://riskfrontier.vercel.app")
+    explicit = Settings()
+    assert explicit.cors_origin_list == ["https://riskfrontier.vercel.app"]
+
+
+def test_development_keeps_its_localhost_origins():
+    from app.core.config import Settings
+
+    dev = Settings()
+    assert "http://localhost:5173" in dev.cors_origin_list

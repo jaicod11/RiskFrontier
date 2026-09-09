@@ -9,9 +9,14 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core.limitations import BOOTSTRAP_LIMITATIONS
 from app.schemas.common import DataWindow
-from app.core.errors import InvalidParameterError, InvalidWeightsError
+from app.core.errors import (
+    InvalidParameterError,
+    InvalidWeightsError,
+    RequestLimitExceededError,
+)
 from app.core.limits import (
     MAX_BOOTSTRAP_RESAMPLES,
+    MAX_WALK_FORWARD_BLOCK_RESAMPLES,
     MAX_TICKERS,
     MAX_WINDOW_YEARS,
     enforce_max,
@@ -156,6 +161,32 @@ class BootstrapRequest(BaseModel):
         enforce_max(len(tickers), MAX_TICKERS, "tickers")
         enforce_max(self.window_years, MAX_WINDOW_YEARS, "window_years", "years")
         enforce_max(self.n_resamples, MAX_BOOTSTRAP_RESAMPLES, "n_resamples")
+
+        # Block bootstrap with walk-forward re-optimisation is the one path
+        # that cannot reuse the optimiser cache: every resample is fresh
+        # synthetic data, so cost is linear in resamples and an order of
+        # magnitude above every other configuration. Reject it above budget
+        # with a message that names the alternative, rather than accepting the
+        # request and letting the platform time it out with no explanation.
+        if self.method == "block_bootstrap" and self.strategy.kind == "walk_forward":
+            if self.n_resamples > MAX_WALK_FORWARD_BLOCK_RESAMPLES:
+                raise RequestLimitExceededError(
+                    f"n_resamples={self.n_resamples} is too high for "
+                    f"block_bootstrap with the walk_forward strategy: this "
+                    f"combination re-optimises on every resample and cannot "
+                    f"reuse cached results, so it costs roughly a second per "
+                    f"resample. The limit for this combination is "
+                    f"{MAX_WALK_FORWARD_BLOCK_RESAMPLES}. Lower n_resamples, "
+                    f"use method=rolling_windows (which caches and stays fast "
+                    f"at any window count), or use the constant_mix strategy.",
+                    details={
+                        "parameter": "n_resamples",
+                        "value": self.n_resamples,
+                        "limit": MAX_WALK_FORWARD_BLOCK_RESAMPLES,
+                        "method": self.method,
+                        "strategy_kind": self.strategy.kind,
+                    },
+                )
         self.tickers = tickers
 
         if self.strategy.kind == "constant_mix":

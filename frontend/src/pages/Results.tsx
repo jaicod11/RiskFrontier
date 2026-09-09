@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { ColdStartBanner } from "../components/ColdStart";
 import { BacktestSection } from "../components/results/BacktestSection";
 import { OptimizerSection } from "../components/results/OptimizerSection";
 import { RiskSection } from "../components/results/RiskSection";
@@ -67,13 +68,19 @@ export default function Results() {
       </header>
 
       {runs.error && <ErrorBanner error={runs.error} onDismiss={runs.clearError} />}
-      {busy && (
-        <RunningNotice
-          label={runs.stage}
-          detail={RUN_DETAIL[runs.running!]}
-          elapsedSeconds={runs.elapsedSeconds}
-        />
-      )}
+      {busy &&
+        (runs.isColdStart ? (
+          <ColdStartBanner
+            elapsedSeconds={runs.elapsedSeconds}
+            context="request"
+          />
+        ) : (
+          <RunningNotice
+            label={runs.stage}
+            detail={RUN_DETAIL[runs.running!]}
+            elapsedSeconds={runs.elapsedSeconds}
+          />
+        ))}
 
       {results.var && <RiskSection data={results.var} />}
       {results.optimize && <OptimizerSection data={results.optimize} />}

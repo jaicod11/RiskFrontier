@@ -894,6 +894,148 @@ Field names are snake_case throughout — asserted by tests that read the
 generated OpenAPI schema, so drift fails the build rather than reaching a client.
 
 
+## Deployment
+
+| Component | Provider | Why |
+|---|---|---|
+| API | Render (free web service) | Docker deploys, blueprint in `render.yaml` |
+| Database | **Neon** (free tier) | Render's free Postgres is **deleted 30 days after creation**; Neon's free tier is permanent |
+| Frontend | Vercel | Static Vite build, `frontend/vercel.json` |
+
+Neon is ordinary Postgres. Moving to it was a connection-string change plus
+pool tuning — no model, migration or query was altered.
+
+### Live URLs
+
+> Fill these in after the first deploy.
+>
+> - Frontend: `https://<project>.vercel.app`
+> - API: `https://<service>.onrender.com` (docs at `/docs`)
+
+### First deploy
+
+1. **Neon** — create a project, copy the pooled connection string (it ends in
+   `?sslmode=require`).
+2. **Schema** — `DATABASE_URL='<neon-url>' alembic upgrade head`. All three
+   migrations apply in one pass from an empty database.
+3. **Data** — seed by restore, *not* by re-ingesting:
+   ```bash
+   ./scripts/dump_local_db.sh                 # ~10 MB, 3 s
+   NEON_DATABASE_URL='<neon-url>' ./scripts/restore_to_neon.sh
+   ```
+   The restore truncates first, so it is idempotent, and verifies the counts
+   afterwards: 51 securities, 119,199 constituent price rows, 4,655 for
+   `^NSEI`, 2 price anomalies.
+
+   **Why not re-ingest?** yfinance rate-limits datacenter IPs. In Phase 1 it
+   returned HTTP 429 for all 50 tickers, which surfaces as empty frames rather
+   than an error — the failure mode looks like missing data, not a blocked
+   request. Restoring a dump is deterministic and takes seconds.
+
+   To refresh prices later, run the ingestion *locally* and re-restore, or run
+   it against Neon from a residential connection:
+   ```bash
+   docker compose exec backend python -m app.scripts.run_ingestion --years 10
+   docker compose exec backend python -m app.scripts.run_ingestion --tickers '^NSEI'
+   ```
+4. **Render** — connect the repo; it reads `render.yaml`. Set the two values
+   marked `sync: false` in the dashboard: `DATABASE_URL` and
+   `CORS_ORIGIN_REGEX`.
+5. **Vercel** — import `frontend/`, set `VITE_API_BASE_URL` to the Render URL.
+   A production build with that variable unset throws at load with an explicit
+   message rather than silently pointing visitors at their own localhost.
+6. **Keep-alive** — set the repository variable `BACKEND_URL` to the Render URL
+   (*Settings → Secrets and variables → Actions → Variables*), then run the
+   workflow once manually to confirm it passes.
+
+### Cold starts are expected
+
+Render suspends a free instance after 15 minutes without traffic; the next
+request waits roughly 50 seconds while it boots. The frontend treats this as a
+first-class state rather than a spinner:
+
+- `/health` is called on load. If it has not returned within **2 seconds**, an
+  inline banner explains the instance is waking, gives an honest upper bound of
+  a minute, and shows a counter and progress bar that visibly advance.
+- The same banner replaces the ordinary progress note for the first analysis
+  request if health has not yet succeeded, since that request is what wakes the
+  instance.
+
+### Keep-alive schedule, and why it is windowed
+
+`.github/workflows/keepalive.yml` pings `/health` every 10 minutes between
+**02:30 and 18:30 UTC** (08:00–00:00 IST).
+
+Render allows **750 instance-hours per workspace per month**. Keeping a service
+awake 24/7 costs 24 × 31 = **744** hours — it fits, but with six hours of margin
+and nothing left for a second free service. The 16-hour window costs at most
+16 × 31 = **496 hours**, covering the hours anyone would plausibly open the
+link and leaving a third of the allowance unused. Outside the window a visitor
+pays one cold start, which the frontend handles.
+
+Ten minutes, not fourteen: Render's idle timeout is 15 minutes and GitHub
+Actions cron is best-effort — it routinely fires several minutes late under
+load. A 10-minute interval keeps five minutes of slack.
+
+### Measured timings
+
+Local, M-series machine, 10-ticker universe. **Not** production figures.
+
+| Endpoint | Configuration | Time |
+|---|---|---|
+| `GET /health` | | 0.04 s |
+| `GET /api/securities` | 51 rows | 0.37 s |
+| `POST /api/risk/var` | 10k sims, 10-day | 0.49 s |
+| `POST /api/risk/var` | 200k sims, 60-day | 11.48 s |
+| `POST /api/portfolio/optimize` | 30 frontier points | 2.60 s |
+| `POST /api/backtest/run` | 8 years, monthly | 0.49 s |
+| `POST /api/backtest/bootstrap` | rolling, constant-mix, 61 windows | 1.91 s |
+| `POST /api/backtest/bootstrap` | rolling, **walk-forward**, 37 windows | 2.59 s |
+| `POST /api/backtest/bootstrap` | block × walk-forward, 10 resamples | 15.7 s |
+| `POST /api/backtest/bootstrap` | block × walk-forward, 50 resamples | 78.4 s |
+| `POST /api/backtest/bootstrap` | block × walk-forward, 100 resamples | 102.8 s |
+
+Rolling windows stay cheap even with walk-forward because the optimiser result
+at a given rebalance date is identical across every window containing it, so it
+is computed once and cached. **Block bootstrap with walk-forward is the one
+path that cannot cache** — every resample is fresh synthetic data — so it costs
+about a second per resample and is budgeted separately.
+
+### Production request budgets
+
+Three caps are environment-configurable so local development keeps the generous
+limits while the shared-CPU free instance gets ones that fit its timeout:
+
+| Setting | Local | Production (`render.yaml`) |
+|---|---|---|
+| `MAX_N_SIMS` | 200,000 | 50,000 |
+| `MAX_BOOTSTRAP_RESAMPLES` | 1,000 | 300 |
+| `MAX_WALK_FORWARD_BLOCK_RESAMPLES` | 100 | 15 |
+
+Exceeding one returns 422 `REQUEST_LIMIT_EXCEEDED` naming the parameter, the
+value and the limit. The walk-forward × block-bootstrap combination has its own
+message that points at `method=rolling_windows` as the fast alternative rather
+than just refusing.
+
+### Free-tier constraints
+
+- **Render** — 512 MB, shared CPU, sleeps after 15 min idle, 750 instance-hours
+  per workspace per month. One gunicorn worker: the import graph alone measures
+  **176 MB** resident and the slow paths are CPU-bound, so a second worker
+  would contend rather than help.
+- **Neon** — permanent free tier, but scales to zero when idle. `pool_pre_ping`
+  replaces a connection the database dropped while asleep, so a resumed
+  database surfaces as a slow first request rather than a 500.
+- **Vercel** — static hosting only; no server-side code, which this frontend
+  does not need.
+
+### Redeploying
+
+Push to the default branch. Render rebuilds the image and runs
+`alembic upgrade head` before the new version takes traffic. Vercel rebuilds
+the frontend. Neither touches the seeded price data.
+
+
 ## Limitations
 
 Every caveat this project has accumulated is consolidated in

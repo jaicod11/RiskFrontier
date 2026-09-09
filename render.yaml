@@ -1,0 +1,79 @@
+# Render blueprint for the RiskFrontier API.
+#
+# There is deliberately NO `databases:` block. Render's free Postgres is
+# deleted 30 days after creation, which would silently take the site down; the
+# database lives on Neon's permanent free tier instead. DATABASE_URL is set in
+# the Render dashboard to the Neon connection string.
+#
+# Deploy: connect this repo in Render, which reads this file. Then fill the
+# values marked `sync: false` in the dashboard — they are secrets or
+# environment-specific and are intentionally not committed.
+
+services:
+  - type: web
+    name: riskfrontier-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    region: singapore          # closest to the NSE data's audience
+    healthCheckPath: /health
+
+    envVars:
+      - key: ENVIRONMENT
+        value: production      # makes missing config fail at boot, not at first query
+      - key: DEBUG
+        value: "false"
+
+      # --- Secrets, set in the dashboard ---------------------------------
+      # Neon connection string. Must include ?sslmode=require.
+      - key: DATABASE_URL
+        sync: false
+      # The deployed Vercel domain, e.g. https://riskfrontier\.vercel\.app
+      # A regex covers preview deployments, which get a new subdomain per commit.
+      - key: CORS_ORIGIN_REGEX
+        sync: false
+
+      # --- Connection pool ------------------------------------------------
+      # Neon scales to zero when idle and charges for connections; a 512 MB
+      # instance has no use for many. pool_pre_ping (set in code) replaces a
+      # connection the database dropped while asleep.
+      - key: DB_REQUIRE_SSL
+        value: "true"
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: DB_POOL_RECYCLE_SECONDS
+        value: "280"
+      - key: DB_CONNECT_TIMEOUT_SECONDS
+        value: "15"
+
+      # --- Request budgets --------------------------------------------------
+      # Lowered from the local defaults because this instance shares a CPU.
+      # Local timings on an M-series machine, for reference:
+      #   200k sims / 60d horizon .................. 11.5 s
+      #   block bootstrap x walk-forward, 100 ...... 102.8 s
+      # A shared-CPU free instance is several times slower, so both are cut.
+      # Every other endpoint measured under 3 s locally and needs no cap change.
+      - key: MAX_N_SIMS
+        value: "50000"
+      - key: MAX_BOOTSTRAP_RESAMPLES
+        value: "300"
+      - key: MAX_WALK_FORWARD_BLOCK_RESAMPLES
+        value: "15"
+
+      # --- Server -----------------------------------------------------------
+      # One worker: the import graph alone is 176 MB resident and the slow
+      # paths are CPU-bound, so a second worker would contend rather than help.
+      - key: WEB_CONCURRENCY
+        value: "1"
+      # Must exceed the slowest permitted request.
+      - key: GUNICORN_TIMEOUT
+        value: "120"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+
+    # Migrations run before the new version receives traffic. Idempotent, so a
+    # redeploy with no new migrations is a no-op.
+    preDeployCommand: alembic upgrade head

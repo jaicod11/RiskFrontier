@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useHealth } from "../api/useHealth";
+import { useHealthStore } from "../store/health";
+import { ColdStartBanner } from "./ColdStart";
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `border-b-2 px-1 pb-1.5 text-xs font-medium transition ${
@@ -9,7 +10,7 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
   }`;
 
 export function Layout() {
-  const { state } = useHealth();
+  const { state, elapsedSeconds, isColdStarting } = useHealthStore();
   const healthy = state.kind === "loaded" && state.data.db === "connected";
 
   return (
@@ -40,7 +41,9 @@ export function Layout() {
               }`}
             />
             {state.kind === "loading"
-              ? "checking"
+              ? isColdStarting
+                ? `waking (${elapsedSeconds}s)`
+                : "checking"
               : healthy
                 ? "backend connected"
                 : "backend unreachable"}
@@ -49,6 +52,11 @@ export function Layout() {
       </header>
 
       <main className="mx-auto max-w-[1400px] px-6 py-6">
+        {isColdStarting && (
+          <div className="mb-4">
+            <ColdStartBanner elapsedSeconds={elapsedSeconds} context="health" />
+          </div>
+        )}
         <Outlet />
       </main>
     </div>

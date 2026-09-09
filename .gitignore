@@ -36,6 +36,11 @@ yarn-error.log*
 pnpm-debug.log*
 .eslintcache
 
+# ---------- Data dumps ----------
+# Regenerate with scripts/dump_local_db.sh; 10 MB of market data does not
+# belong in git history.
+dumps/
+
 # ---------- Environment ----------
 .env
 .env.*
