@@ -11,10 +11,7 @@ from app.core.db import get_db
 from app.core.errors import ErrorResponse
 from app.schemas.common import DataWindow
 from app.schemas.risk import VarRequest, VarResponse
-from app.services.monte_carlo import (
-    run_historical_bootstrap_var,
-    run_parametric_var,
-)
+from app.services.monte_carlo import run_both_methods
 from app.services.returns import build_returns_matrix
 
 logger = logging.getLogger(__name__)
@@ -60,18 +57,18 @@ def compute_var(request: VarRequest, db: Session = Depends(get_db)) -> VarRespon
     # Align weights to the matrix column order rather than the request order.
     weights = [portfolio.weight_for(ticker) for ticker in returns_df.columns]
 
-    common = {
-        "returns_df": returns_df,
-        "weights": weights,
-        "total_value": portfolio.total_value_inr,
-        "n_sims": request.n_sims,
-        "horizon_days": request.horizon_days,
-        "confidence_levels": request.confidence_levels,
-        "seed": request.seed,
-    }
-
-    parametric = run_parametric_var(**common)
-    bootstrap = run_historical_bootstrap_var(**common)
+    # One call so each method is simulated once and its summary statistics and
+    # histogram come from the same array — they cannot disagree.
+    parametric, bootstrap, distribution = run_both_methods(
+        returns_df=returns_df,
+        weights=weights,
+        total_value=portfolio.total_value_inr,
+        n_sims=request.n_sims,
+        horizon_days=request.horizon_days,
+        confidence_levels=request.confidence_levels,
+        seed=request.seed,
+        distribution_bins=request.distribution_bins,
+    )
 
     return VarResponse(
         total_value_inr=portfolio.total_value_inr,
@@ -93,4 +90,5 @@ def compute_var(request: VarRequest, db: Session = Depends(get_db)) -> VarRespon
         ),
         parametric=parametric,
         historical_bootstrap=bootstrap,
+        distribution=distribution,
     )

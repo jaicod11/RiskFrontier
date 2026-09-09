@@ -32,7 +32,8 @@ import numpy as np
 import pandas as pd
 
 from app.core.errors import InvalidParameterError
-from app.schemas.risk import MethodResult, VarEstimate
+from app.core.limits import DEFAULT_DISTRIBUTION_BINS
+from app.schemas.risk import MethodResult, PnlDistribution, VarEstimate
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +167,25 @@ def run_parametric_var(
     portfolio return is ``weights · daily asset returns``, and those daily
     returns are compounded across the horizon.
     """
+    path_returns = parametric_path_returns(
+        returns_df, weights, total_value, n_sims, horizon_days, seed
+    )
+    return _summarise(path_returns, total_value, confidence_levels, PARAMETRIC)
+
+
+def parametric_path_returns(
+    returns_df: pd.DataFrame,
+    weights: Sequence[float],
+    total_value: float,
+    n_sims: int = 10_000,
+    horizon_days: int = 1,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Simulated horizon returns under the multivariate normal fit.
+
+    Split out so the same array can feed both the summary statistics and the
+    P&L histogram without simulating twice.
+    """
     w = _validate_inputs(returns_df, weights, total_value, n_sims, horizon_days)
     n_assets = returns_df.shape[1]
 
@@ -187,7 +207,7 @@ def run_parametric_var(
             np.prod(1.0 + portfolio_daily, axis=1) - 1.0
         )
 
-    return _summarise(path_returns, total_value, confidence_levels, PARAMETRIC)
+    return path_returns
 
 
 def run_historical_bootstrap_var(
@@ -205,6 +225,23 @@ def run_historical_bootstrap_var(
     return from that date *together*, so the correlation structure that actually
     occurred on that day is preserved.
     """
+    path_returns = bootstrap_path_returns(
+        returns_df, weights, total_value, n_sims, horizon_days, seed
+    )
+    return _summarise(
+        path_returns, total_value, confidence_levels, HISTORICAL_BOOTSTRAP
+    )
+
+
+def bootstrap_path_returns(
+    returns_df: pd.DataFrame,
+    weights: Sequence[float],
+    total_value: float,
+    n_sims: int = 10_000,
+    horizon_days: int = 1,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Simulated horizon returns from resampling whole historical days."""
     w = _validate_inputs(returns_df, weights, total_value, n_sims, horizon_days)
     n_assets = returns_df.shape[1]
 
@@ -226,6 +263,80 @@ def run_historical_bootstrap_var(
             np.prod(1.0 + portfolio_daily, axis=1) - 1.0
         )
 
-    return _summarise(
-        path_returns, total_value, confidence_levels, HISTORICAL_BOOTSTRAP
+    return path_returns
+
+
+# ---------------------------------------------------------------------------
+# P&L distribution
+# ---------------------------------------------------------------------------
+
+
+def build_shared_distribution(
+    parametric_pnl: np.ndarray,
+    bootstrap_pnl: np.ndarray,
+    n_bins: int = DEFAULT_DISTRIBUTION_BINS,
+) -> PnlDistribution:
+    """Histogram both methods over ONE set of bin edges.
+
+    The edges span the union of both arrays so the two histograms are directly
+    overlayable: a difference in the left tail is a difference in the
+    distributions, not an artefact of two different binnings.
+
+    Only the binned counts are returned. The raw per-simulation array is
+    deliberately not exposed — at 200,000 simulations it is a payload problem,
+    and a chart needs the bins, not the samples.
+    """
+    if n_bins < 1:
+        raise InvalidParameterError(f"n_bins must be at least 1, got {n_bins}")
+
+    combined = np.concatenate([parametric_pnl, bootstrap_pnl])
+    edges = np.histogram_bin_edges(combined, bins=n_bins)
+
+    # np.histogram puts the rightmost value in the last bin, and the edges span
+    # the union, so every simulated value is counted exactly once per method.
+    parametric_counts, _ = np.histogram(parametric_pnl, bins=edges)
+    bootstrap_counts, _ = np.histogram(bootstrap_pnl, bins=edges)
+
+    return PnlDistribution(
+        n_bins=len(edges) - 1,
+        bin_edges=[float(edge) for edge in edges],
+        parametric_counts=[int(count) for count in parametric_counts],
+        historical_bootstrap_counts=[int(count) for count in bootstrap_counts],
     )
+
+
+def run_both_methods(
+    returns_df: pd.DataFrame,
+    weights: Sequence[float],
+    total_value: float,
+    n_sims: int = 10_000,
+    horizon_days: int = 1,
+    confidence_levels: Sequence[float] = (0.95, 0.99),
+    seed: int | None = None,
+    distribution_bins: int = DEFAULT_DISTRIBUTION_BINS,
+) -> tuple[MethodResult, MethodResult, PnlDistribution]:
+    """Both simulations plus a histogram of their P&L over shared bins.
+
+    Each method is simulated once; the resulting array feeds both its summary
+    statistics and its histogram, so the two are guaranteed consistent with
+    each other rather than being two independent estimates.
+    """
+    parametric_returns = parametric_path_returns(
+        returns_df, weights, total_value, n_sims, horizon_days, seed
+    )
+    bootstrap_returns = bootstrap_path_returns(
+        returns_df, weights, total_value, n_sims, horizon_days, seed
+    )
+
+    parametric = _summarise(
+        parametric_returns, total_value, confidence_levels, PARAMETRIC
+    )
+    bootstrap = _summarise(
+        bootstrap_returns, total_value, confidence_levels, HISTORICAL_BOOTSTRAP
+    )
+    distribution = build_shared_distribution(
+        total_value * parametric_returns,
+        total_value * bootstrap_returns,
+        distribution_bins,
+    )
+    return parametric, bootstrap, distribution

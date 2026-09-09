@@ -3,19 +3,6 @@ import { useMemo, useState } from "react";
 import type { SecuritySummary } from "../api/types";
 import { TextInput } from "./ui";
 
-/**
- * Whether a row is the benchmark index rather than an investable constituent.
- *
- * NOTE: an API gap. `/api/securities` does not expose the `is_benchmark`
- * column that exists on the securities table, so this leans on the sector the
- * API does return ("Index", set when the benchmark is seeded). That is
- * API-driven rather than a hardcoded "^NSEI" check, but it is a proxy —
- * exposing `is_benchmark` on SecuritySummary would make it exact.
- */
-function isBenchmark(security: SecuritySummary): boolean {
-  return security.sector === "Index";
-}
-
 export function TickerPicker({
   securities,
   selected,
@@ -29,7 +16,7 @@ export function TickerPicker({
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const investable = securities.filter((s) => !isBenchmark(s));
+    const investable = securities.filter((s) => !s.is_benchmark);
     if (!needle) return investable;
     return investable.filter(
       (s) =>
@@ -47,7 +34,7 @@ export function TickerPicker({
         placeholder="Search ticker, name or sector…"
       />
       <p className="mt-1 text-[11px] text-slate-500">
-        {matches.length} of {securities.filter((s) => !isBenchmark(s)).length}{" "}
+        {matches.length} of {securities.filter((s) => !s.is_benchmark).length}{" "}
         · {selected.size} selected
       </p>
 

@@ -23,6 +23,10 @@ from app.core.errors import RequestLimitExceededError
 #: Monte Carlo
 MAX_N_SIMS = 200_000
 MAX_HORIZON_DAYS = 252
+#: Histogram resolution. Beyond a few hundred bins a chart gains nothing and
+#: the response just grows.
+DEFAULT_DISTRIBUTION_BINS = 50
+MAX_DISTRIBUTION_BINS = 250
 
 #: Universe size, shared by every endpoint that takes a ticker list.
 MAX_TICKERS = 50

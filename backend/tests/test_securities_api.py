@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 
 def test_list_securities_returns_coverage_shape(client):
     response = client.get("/api/securities")
@@ -22,7 +24,7 @@ def test_list_securities_returns_coverage_shape(client):
     first = payload[0]
     assert set(first) == {
         "id", "ticker", "name", "exchange", "sector",
-        "is_active", "row_count", "first_date", "last_date",
+        "is_active", "is_benchmark", "row_count", "first_date", "last_date",
     }
     assert all(s["exchange"] == "NSE" for s in payload)
     assert all(not s["ticker"].endswith(".NS") for s in payload)
@@ -102,3 +104,27 @@ def test_prices_accept_the_yahoo_ticker_form(client):
 
     assert bare.status_code == yahoo.status_code == 200
     assert bare.json()["ticker"] == yahoo.json()["ticker"] == ticker
+
+
+def test_benchmark_flag_distinguishes_the_index(client):
+    """The picker needs this directly, not inferred from sector."""
+    payload = client.get("/api/securities").json()
+    if not payload:
+        pytest.skip("database not ingested")
+
+    by_ticker = {row["ticker"]: row for row in payload}
+    assert "is_benchmark" in payload[0]
+
+    if "^NSEI" in by_ticker:
+        assert by_ticker["^NSEI"]["is_benchmark"] is True
+    if "RELIANCE" in by_ticker:
+        assert by_ticker["RELIANCE"]["is_benchmark"] is False
+
+    # Exactly the index is flagged; every constituent is not.
+    flagged = [row["ticker"] for row in payload if row["is_benchmark"]]
+    assert flagged == ["^NSEI"] or flagged == []
+    assert all(
+        row["is_benchmark"] is False
+        for row in payload
+        if not row["ticker"].startswith("^")
+    )

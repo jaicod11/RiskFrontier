@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,10 @@ class SecuritySummary(BaseModel):
     exchange: str
     sector: str | None
     is_active: bool
+    is_benchmark: bool = Field(
+        description="True for the index series held for benchmarking (^NSEI), "
+                    "false for investable constituents"
+    )
     row_count: int
     first_date: dt.date | None
     last_date: dt.date | None
@@ -80,6 +84,7 @@ def list_securities(db: Session = Depends(get_db)) -> list[SecuritySummary]:
             Security.exchange,
             Security.sector,
             Security.is_active,
+            Security.is_benchmark,
             func.count(DailyPrice.id).label("row_count"),
             func.min(DailyPrice.date).label("first_date"),
             func.max(DailyPrice.date).label("last_date"),
@@ -93,6 +98,7 @@ def list_securities(db: Session = Depends(get_db)) -> list[SecuritySummary]:
             Security.exchange,
             Security.sector,
             Security.is_active,
+            Security.is_benchmark,
         )
         .order_by(Security.ticker)
     )

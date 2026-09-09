@@ -259,3 +259,46 @@ def test_matrix_columns_align_with_requested_tickers(ingested_db):
     assert len(frame) == 100
     assert frame.index.is_monotonic_increasing
     assert not frame.isna().any().any()
+
+
+def test_var_response_carries_the_pnl_distribution(client):
+    response = _post(client, n_sims=5_000)
+    if response.status_code == 422:
+        pytest.skip("database not ingested")
+
+    distribution = response.json()["distribution"]
+    assert len(distribution["bin_edges"]) == distribution["n_bins"] + 1
+    assert sum(distribution["parametric_counts"]) == 5_000
+    assert sum(distribution["historical_bootstrap_counts"]) == 5_000
+    # Shared edges: the two series are directly overlayable.
+    assert len(distribution["parametric_counts"]) == distribution["n_bins"]
+    assert len(distribution["historical_bootstrap_counts"]) == distribution["n_bins"]
+
+
+def test_distribution_bin_count_is_configurable_and_capped(client):
+    from app.core.limits import MAX_DISTRIBUTION_BINS
+
+    response = _post(client, n_sims=2_000, distribution_bins=24)
+    if response.status_code == 422:
+        pytest.skip("database not ingested")
+    assert response.json()["distribution"]["n_bins"] == 24
+
+    over = _post(client, distribution_bins=MAX_DISTRIBUTION_BINS + 1)
+    assert over.status_code == 422
+    assert over.json()["error_code"] == "REQUEST_LIMIT_EXCEEDED"
+
+
+def test_raw_simulation_array_is_not_returned(client):
+    """200k floats is a payload problem; the chart needs bins, not samples."""
+    response = _post(client, n_sims=5_000)
+    if response.status_code == 422:
+        pytest.skip("database not ingested")
+
+    payload = response.json()
+    assert "path_returns" not in payload
+    assert "simulations" not in payload
+    for key in ("parametric", "historical_bootstrap"):
+        assert not any(
+            isinstance(value, list) and len(value) > 1000
+            for value in payload[key].values()
+        )

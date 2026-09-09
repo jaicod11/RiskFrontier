@@ -1,19 +1,10 @@
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Legend,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import type { MethodResult, VarResponse } from "../../api/types";
-import { inr, inrCompact, pctPoints } from "../../lib/format";
+import { inr, pctPoints } from "../../lib/format";
 import { DataWindowNote } from "../DataWindowNote";
 import { Limitations } from "../Limitations";
 import { Metric, Panel } from "../ui";
-import { AXIS_TICK, GRID, METHOD_COLOR, TOOLTIP_STYLE } from "./chartTheme";
+import { METHOD_COLOR } from "./chartTheme";
+import { PnlHistogram } from "./PnlHistogram";
 
 function estimateAt(method: MethodResult, level: number) {
   return method.estimates.find(
@@ -27,20 +18,6 @@ export function RiskSection({ data }: { data: VarResponse }) {
     { key: "parametric", result: data.parametric },
     { key: "historical_bootstrap", result: data.historical_bootstrap },
   ];
-
-  // Grouped bars make the divergence between the two methods the visual subject.
-  const chartData = levels.flatMap((level) => [
-    {
-      threshold: `VaR ${(level * 100).toFixed(0)}%`,
-      parametric: estimateAt(data.parametric, level)?.var_inr ?? 0,
-      bootstrap: estimateAt(data.historical_bootstrap, level)?.var_inr ?? 0,
-    },
-    {
-      threshold: `CVaR ${(level * 100).toFixed(0)}%`,
-      parametric: estimateAt(data.parametric, level)?.cvar_inr ?? 0,
-      bootstrap: estimateAt(data.historical_bootstrap, level)?.cvar_inr ?? 0,
-    },
-  ]);
 
   const worstLevel = levels[levels.length - 1];
   const paramCvar = estimateAt(data.parametric, worstLevel)?.cvar_inr ?? 0;
@@ -132,8 +109,7 @@ export function RiskSection({ data }: { data: VarResponse }) {
         </table>
 
         <div>
-          <div className="mb-1 flex items-baseline justify-between">
-            <h3 className="eyebrow text-slate-500">Loss thresholds by method</h3>
+          <div className="mb-1 flex justify-end">
             <span className="text-[11px] text-slate-500">
               Bootstrap CVaR {(worstLevel * 100).toFixed(0)}% is{" "}
               <span
@@ -147,43 +123,11 @@ export function RiskSection({ data }: { data: VarResponse }) {
               vs parametric
             </span>
           </div>
-          <div className="h-56 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
-                <CartesianGrid stroke={GRID} vertical={false} />
-                <XAxis dataKey="threshold" tick={AXIS_TICK} tickLine={false} />
-                <YAxis
-                  tick={AXIS_TICK}
-                  tickLine={false}
-                  axisLine={false}
-                  tickFormatter={(value) => inrCompact(Number(value))}
-                  width={64}
-                />
-                <Tooltip
-                  {...TOOLTIP_STYLE}
-                  formatter={(value, name) => [inr(Number(value)), String(name)]}
-                />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-                <Bar
-                  dataKey="parametric"
-                  name="Parametric"
-                  fill={METHOD_COLOR.parametric}
-                />
-                <Bar
-                  dataKey="bootstrap"
-                  name="Historical bootstrap"
-                  fill={METHOD_COLOR.historical_bootstrap}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-          <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
-            Losses at each threshold, both methods side by side. A full histogram
-            of the simulated P&amp;L distribution is not drawn here: the API
-            returns summary statistics rather than the simulated paths or
-            histogram bins, and inventing a shape from the summary would
-            misrepresent the simulation.
-          </p>
+          <PnlHistogram
+            distribution={data.distribution}
+            parametric={data.parametric}
+            bootstrap={data.historical_bootstrap}
+          />
         </div>
 
         <div className="grid gap-4 border-t border-slate-200 pt-3 sm:grid-cols-3 dark:border-slate-800">

@@ -792,22 +792,22 @@ silently drop one.
 Nothing is hardcoded: if the API returns no limitations, the UI says so in red
 rather than rendering an empty space, because a missing caveat is a defect.
 
-### Known gaps in the API that the frontend had to work around
+### The P&L distribution
 
-1. **No P&L distribution data.** `/api/risk/var` returns summary statistics
-   (VaR, CVaR, worst, best, mean) but not the simulated paths or histogram
-   bins, so a true histogram of the simulated distribution cannot be drawn.
-   The UI renders a grouped bar chart of the loss thresholds by method instead
-   and says why — inventing a shape from the summary would misrepresent the
-   simulation. *Fix: return histogram bin edges and counts from the existing
-   simulation.*
-2. **`is_benchmark` is not exposed.** `/api/securities` omits the
-   `is_benchmark` column that exists on the table, so the picker cannot
-   distinguish the index from investable constituents. It currently leans on
-   the API-provided `sector == "Index"` rather than hardcoding `^NSEI`.
-   *Fix: add `is_benchmark` to `SecuritySummary`.*
+`/api/risk/var` returns a `distribution` object: shared `bin_edges` plus per-method
+counts, computed with `numpy.histogram` over the simulated P&L the engine
+already produces. Both methods are binned over **one set of edges spanning both
+arrays**, so the overlaid chart compares distributions rather than binnings, and
+the divergence in the left tail is directly readable.
 
-Neither was worked around by fabricating data.
+The raw per-simulation array is deliberately not returned — at 200,000
+simulations that is a payload problem, and a chart needs bins, not samples. A
+20,000-simulation response with 40 bins is about 3.4 KB.
+
+A test asserts the counts sum to `n_sims` for each method, and that the reported
+VaR at each confidence level falls within one bin of where the histogram's
+cumulative count crosses `(1 − confidence) × n_sims` — so the headline number
+and the chart cannot drift apart.
 
 
 ## API contract

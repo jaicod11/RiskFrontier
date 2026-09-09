@@ -23,6 +23,7 @@ export type VarRequest = Schemas["VarRequest"];
 export type VarResponse = Schemas["VarResponse"];
 export type VarEstimate = Schemas["VarEstimate"];
 export type MethodResult = Schemas["MethodResult"];
+export type PnlDistribution = Schemas["PnlDistribution"];
 
 export type OptimizeRequest = Schemas["OptimizeRequest"];
 export type OptimizeResponse = Schemas["OptimizeResponse"];

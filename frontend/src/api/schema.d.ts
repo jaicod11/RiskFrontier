@@ -701,6 +701,33 @@ export interface components {
             total_return: number;
         };
         /**
+         * PnlDistribution
+         * @description Histogram of simulated horizon P&L, both methods over shared bins.
+         *
+         *     ``bin_edges`` has ``n_bins + 1`` entries in INR; each counts array has
+         *     ``n_bins`` entries and sums to ``n_sims``. Both methods share the edges so
+         *     they can be overlaid and compared directly in the left tail.
+         */
+        PnlDistribution: {
+            /** N Bins */
+            n_bins: number;
+            /**
+             * Bin Edges
+             * @description Bin boundaries in INR, length n_bins + 1, ascending
+             */
+            bin_edges: number[];
+            /**
+             * Parametric Counts
+             * @description Simulations per bin under the normal fit; sums to n_sims
+             */
+            parametric_counts: number[];
+            /**
+             * Historical Bootstrap Counts
+             * @description Simulations per bin under day resampling; sums to n_sims
+             */
+            historical_bootstrap_counts: number[];
+        };
+        /**
          * Portfolio
          * @description A set of positions and the rupee value they represent.
          *
@@ -785,6 +812,11 @@ export interface components {
             sector: string | null;
             /** Is Active */
             is_active: boolean;
+            /**
+             * Is Benchmark
+             * @description True for the index series held for benchmarking (^NSEI), false for investable constituents
+             */
+            is_benchmark: boolean;
             /** Row Count */
             row_count: number;
             /** First Date */
@@ -942,6 +974,12 @@ export interface components {
              * @description Set for reproducible simulations
              */
             seed?: number | null;
+            /**
+             * Distribution Bins
+             * @description Histogram bins for the P&L distribution (max 250)
+             * @default 50
+             */
+            distribution_bins: number;
         };
         /**
          * VarResponse
@@ -970,6 +1008,8 @@ export interface components {
             data_window: components["schemas"]["DataWindow"];
             parametric: components["schemas"]["MethodResult"];
             historical_bootstrap: components["schemas"]["MethodResult"];
+            /** @description Simulated P&L histogram, both methods over shared bins */
+            distribution: components["schemas"]["PnlDistribution"];
             /**
              * Limitations
              * @description Caveats that must be shown alongside these numbers

@@ -316,3 +316,116 @@ def test_total_value_must_be_positive():
         Portfolio(
             positions=[{"ticker": "RELIANCE", "weight": 1.0}], total_value_inr=0
         )
+
+
+# --- P&L distribution -------------------------------------------------------
+
+
+def test_distribution_counts_sum_to_n_sims(single_asset):
+    """Shared edges span both arrays, so nothing falls outside a bin."""
+    from app.services.monte_carlo import run_both_methods
+
+    n_sims = 20_000
+    _, _, distribution = run_both_methods(
+        single_asset, [1.0], TOTAL_VALUE, n_sims=n_sims, horizon_days=5, seed=11
+    )
+
+    assert sum(distribution.parametric_counts) == n_sims
+    assert sum(distribution.historical_bootstrap_counts) == n_sims
+    assert len(distribution.bin_edges) == distribution.n_bins + 1
+    assert len(distribution.parametric_counts) == distribution.n_bins
+    assert len(distribution.historical_bootstrap_counts) == distribution.n_bins
+
+
+def test_distribution_edges_are_shared_and_ascending(negatively_correlated):
+    from app.services.monte_carlo import run_both_methods
+
+    _, _, distribution = run_both_methods(
+        negatively_correlated, [0.5, 0.5], TOTAL_VALUE,
+        n_sims=10_000, horizon_days=10, seed=3,
+    )
+    edges = distribution.bin_edges
+    assert edges == sorted(edges)
+    assert len(set(edges)) == len(edges)
+    # One edge array serves both methods, which is what makes them overlayable.
+    assert len(distribution.parametric_counts) == len(
+        distribution.historical_bootstrap_counts
+    )
+
+
+@pytest.mark.parametrize("level", [0.95, 0.99])
+def test_histogram_and_reported_var_agree(single_asset, level):
+    """The VaR threshold must sit where the left-tail mass reaches (1-c)·n.
+
+    This is the consistency check between the two things the endpoint returns:
+    if the histogram and the headline number disagreed, one of them would be
+    describing a different simulation.
+    """
+    from app.services.monte_carlo import run_both_methods
+
+    n_sims = 50_000
+    parametric, bootstrap, distribution = run_both_methods(
+        single_asset, [1.0], TOTAL_VALUE,
+        n_sims=n_sims, horizon_days=5, confidence_levels=[level], seed=7,
+    )
+
+    edges = np.asarray(distribution.bin_edges)
+    for result, counts in (
+        (parametric, distribution.parametric_counts),
+        (bootstrap, distribution.historical_bootstrap_counts),
+    ):
+        estimate = result.estimates[0]
+        # VaR is reported as a positive loss; the P&L threshold is its negation.
+        threshold_pnl = -estimate.var_inr
+
+        # Bin the histogram's cumulative mass reaches (1 - level) * n_sims in.
+        cumulative = np.cumsum(counts)
+        target = (1.0 - level) * n_sims
+        crossing_bin = int(np.searchsorted(cumulative, target))
+
+        # Bin the reported threshold actually falls in.
+        threshold_bin = int(np.clip(
+            np.searchsorted(edges, threshold_pnl) - 1, 0, distribution.n_bins - 1
+        ))
+
+        assert abs(crossing_bin - threshold_bin) <= 1, (
+            f"{result.method} at {level}: histogram crosses {target:.0f} "
+            f"simulations in bin {crossing_bin}, but the reported VaR "
+            f"(₹{estimate.var_inr:,.0f}) sits in bin {threshold_bin}"
+        )
+
+
+def test_distribution_respects_the_bin_count(single_asset):
+    from app.services.monte_carlo import run_both_methods
+
+    for n_bins in (10, 50, 120):
+        _, _, distribution = run_both_methods(
+            single_asset, [1.0], TOTAL_VALUE,
+            n_sims=5_000, seed=1, distribution_bins=n_bins,
+        )
+        assert distribution.n_bins == n_bins
+
+
+def test_distribution_is_reproducible(single_asset):
+    from app.services.monte_carlo import run_both_methods
+
+    kwargs = dict(n_sims=8_000, horizon_days=3, seed=2026)
+    _, _, first = run_both_methods(single_asset, [1.0], TOTAL_VALUE, **kwargs)
+    _, _, second = run_both_methods(single_asset, [1.0], TOTAL_VALUE, **kwargs)
+    assert first.model_dump() == second.model_dump()
+
+
+def test_run_both_methods_matches_the_individual_functions(single_asset):
+    """The combined call must not change the numbers the split calls give."""
+    from app.services.monte_carlo import run_both_methods
+
+    kwargs = dict(n_sims=10_000, horizon_days=4, confidence_levels=[0.95], seed=5)
+    parametric, bootstrap, _ = run_both_methods(
+        single_asset, [1.0], TOTAL_VALUE, **kwargs
+    )
+    assert parametric.model_dump() == run_parametric_var(
+        single_asset, [1.0], TOTAL_VALUE, **kwargs
+    ).model_dump()
+    assert bootstrap.model_dump() == run_historical_bootstrap_var(
+        single_asset, [1.0], TOTAL_VALUE, **kwargs
+    ).model_dump()

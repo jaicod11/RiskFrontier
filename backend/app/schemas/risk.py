@@ -6,6 +6,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from app.core.limitations import VAR_LIMITATIONS
 from app.core.limits import (
+    DEFAULT_DISTRIBUTION_BINS,
+    MAX_DISTRIBUTION_BINS,
     MAX_HORIZON_DAYS,
     MAX_LOOKBACK_DAYS,
     MAX_N_SIMS,
@@ -33,6 +35,26 @@ class MethodResult(BaseModel):
     mean_horizon_return_pct: float
     worst_simulated_pnl_inr: float
     best_simulated_pnl_inr: float
+
+
+class PnlDistribution(BaseModel):
+    """Histogram of simulated horizon P&L, both methods over shared bins.
+
+    ``bin_edges`` has ``n_bins + 1`` entries in INR; each counts array has
+    ``n_bins`` entries and sums to ``n_sims``. Both methods share the edges so
+    they can be overlaid and compared directly in the left tail.
+    """
+
+    n_bins: int
+    bin_edges: list[float] = Field(
+        description="Bin boundaries in INR, length n_bins + 1, ascending"
+    )
+    parametric_counts: list[int] = Field(
+        description="Simulations per bin under the normal fit; sums to n_sims"
+    )
+    historical_bootstrap_counts: list[int] = Field(
+        description="Simulations per bin under day resampling; sums to n_sims"
+    )
 
 
 class VarRequest(BaseModel):
@@ -78,6 +100,18 @@ class VarRequest(BaseModel):
     seed: int | None = Field(
         default=None, description="Set for reproducible simulations"
     )
+    distribution_bins: int = Field(
+        default=DEFAULT_DISTRIBUTION_BINS,
+        ge=5,
+        description=f"Histogram bins for the P&L distribution "
+                    f"(max {MAX_DISTRIBUTION_BINS})",
+        json_schema_extra={"maximum": MAX_DISTRIBUTION_BINS},
+    )
+
+    @field_validator("distribution_bins")
+    @classmethod
+    def _cap_bins(cls, value: int) -> int:
+        return enforce_max(value, MAX_DISTRIBUTION_BINS, "distribution_bins")
 
     @field_validator("n_sims")
     @classmethod
@@ -122,6 +156,9 @@ class VarResponse(BaseModel):
     data_window: DataWindow
     parametric: MethodResult
     historical_bootstrap: MethodResult
+    distribution: PnlDistribution = Field(
+        description="Simulated P&L histogram, both methods over shared bins"
+    )
     limitations: list[str] = Field(
         default_factory=lambda: list(VAR_LIMITATIONS),
         description="Caveats that must be shown alongside these numbers",

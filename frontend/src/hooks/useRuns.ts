@@ -86,6 +86,7 @@ export function useRuns() {
           horizon_days: params.horizonDays,
           lookback_days: params.lookbackDays,
           confidence_levels: [0.95, 0.99],
+          distribution_bins: 60,
           seed: 42,
         }),
       );
