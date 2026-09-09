@@ -56,18 +56,35 @@ services:
         value: "15"
 
       # --- Request budgets --------------------------------------------------
-      # Lowered from the local defaults because this instance shares a CPU.
-      # Local timings on an M-series machine, for reference:
-      #   200k sims / 60d horizon .................. 11.5 s
-      #   block bootstrap x walk-forward, 100 ...... 102.8 s
-      # A shared-CPU free instance is several times slower, so both are cut.
-      # Every other endpoint measured under 3 s locally and needs no cap change.
+      # Set from timings MEASURED ON THIS INSTANCE, not extrapolated. Render's
+      # shared CPU runs 5-9x slower than a local M-series machine:
+      #
+      #   endpoint                                  local     prod
+      #   /api/securities                           0.37 s    0.48 s
+      #   VaR 10k sims / 10d                        0.49 s    0.81 s
+      #   optimize, 30 frontier points              2.60 s   12.26 s
+      #   backtest, 8 years monthly                 0.49 s    3.17 s
+      #   bootstrap rolling, constant-mix           1.91 s   16.18 s
+      #   bootstrap rolling, walk-forward           2.59 s   24.18 s
+      #
+      # Worst case at each cap, measured on prod:
+      #   MAX_N_SIMS 50k at the 252-day horizon ............ 17.9 s  (kept)
+      #   MAX_BOOTSTRAP_RESAMPLES 300, block constant-mix ... 83.0 s  (too slow)
+      #                           150 ...................... 38.7 s  (chosen)
+      #   MAX_WALK_FORWARD_BLOCK_RESAMPLES 15 ............. 129.9 s  (too slow)
+      #                                    10 .............. 81.1 s  (the floor)
+      #
+      # 10 is the schema minimum for n_resamples, so 81 s is the cheapest this
+      # combination can be on this hardware — it re-optimises on every resample
+      # and cannot reuse the cache. rolling_windows runs the same walk-forward
+      # strategy in 24 s and is the primary method; the 422 for this
+      # combination points there.
       - key: MAX_N_SIMS
         value: "50000"
       - key: MAX_BOOTSTRAP_RESAMPLES
-        value: "300"
+        value: "150"
       - key: MAX_WALK_FORWARD_BLOCK_RESAMPLES
-        value: "15"
+        value: "10"
 
       # --- Server -----------------------------------------------------------
       # One worker: the import graph alone is 176 MB resident and the slow

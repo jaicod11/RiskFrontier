@@ -907,10 +907,13 @@ pool tuning — no model, migration or query was altered.
 
 ### Live URLs
 
-> Fill these in after the first deploy.
->
-> - Frontend: `https://<project>.vercel.app`
-> - API: `https://<service>.onrender.com` (docs at `/docs`)
+- **Frontend:** <https://riskfrontier.vercel.app>
+- **API:** <https://riskfrontier.onrender.com> — interactive docs at
+  [`/docs`](https://riskfrontier.onrender.com/docs)
+
+Verified in production: `/health` returns `{"status":"ok","db":"connected"}`;
+`/api/securities` returns 51 securities and 123,854 price rows, identical to
+local on ticker, row count, date range and benchmark flag for all 51.
 
 ### First deploy
 
@@ -948,6 +951,19 @@ pool tuning — no model, migration or query was altered.
    | `DATABASE_URL_UNPOOLED` | **direct** (same host without `-pooler`) | Alembic only |
    | `CORS_ORIGIN_REGEX` | — | CORS |
 
+   **Escaping matters.** Paste the regex into the Render dashboard with
+   **single** backslashes:
+
+   ```
+   https://riskfrontier.*\.vercel\.app
+   ```
+
+   Doubled backslashes (`\\.`) are correct only inside `.env` files, where
+   dotenv unescapes them. Pasted into a dashboard field they are literal and
+   match a backslash rather than a dot, so every preflight fails with
+   `400 Disallowed CORS origin` and no `access-control-allow-origin` header —
+   the API answers requests normally, but browsers discard every response.
+
    Neon's pooled endpoint uses transaction pooling, which does not preserve the
    session state Alembic relies on, so migrations run over the direct
    connection while ordinary request traffic uses the pooler. Locally only
@@ -957,18 +973,44 @@ pool tuning — no model, migration or query was altered.
    A production build with that variable unset throws at load with an explicit
    message rather than silently pointing visitors at their own localhost.
 6. **Keep-alive** — set the repository variable `BACKEND_URL` to the Render URL
-   (*Settings → Secrets and variables → Actions → Variables*), then run the
-   workflow once manually to confirm it passes.
+   (*Settings → Secrets and variables → Actions → Variables*).
+
+   **Confirmed working.** The first scheduled run succeeded, logging
+   `OK (200): {"status":"ok","db":"connected"}` in 27 s total — the workflow
+   checks the database is reachable, not merely that the app answered.
 
 ### Cold starts are expected
 
 Render suspends a free instance after 15 minutes without traffic; the next
-request waits roughly 50 seconds while it boots. The frontend treats this as a
-first-class state rather than a spinner:
+request then waits for it to come back. **Measured on this deployment: 27.2 s
+(curl) and 26.4 s (browser)** — two samples 0.8 s apart, taken after a genuine
+15-plus-minute idle. These are measurements, not Render's general free-tier
+guidance, which quotes roughly double.
+
+That figure is the whole round trip, not Render alone: `/health` queries the
+database, so it covers **Neon resuming from its own idle state as well as
+Render booting the container**. The two cannot be separated from this
+measurement, and either could dominate on a given wake.
+
+The request returns a clean `200` with the app's own JSON — Render proxies
+through to the container rather than serving a holding page, confirmed by
+`x-render-origin-server: uvicorn` on the response. The TLS handshake completes
+in ~0.13 s and the connection is then simply held open. Warm requests
+immediately afterwards: 0.11-0.13 s.
+
+The frontend treats this as a first-class state rather than a spinner:
 
 - `/health` is called on load. If it has not returned within **2 seconds**, an
   inline banner explains the instance is waking, gives an honest upper bound of
-  a minute, and shows a counter and progress bar that visibly advance.
+  a minute, and shows a counter and progress bar that visibly advance. Verified
+  against a real cold start: the banner appeared at 2.7 s, the counter tracked
+  elapsed time exactly, the bar advanced 5% -> 40%, and both cleared at 27.8 s
+  when the app loaded, with no console errors.
+
+  The bar is paced by `EXPECTED_WAKE_SECONDS = 40`, above both measured samples
+  so it never claims to be finished while the user is still waiting. The copy
+  still says "up to a minute" deliberately: that is the honest upper bound, and
+  under-promising a wait is the safer direction.
 - The same banner replaces the ordinary progress note for the first analysis
   request if health has not yet succeeded, since that request is what wakes the
   instance.
@@ -991,21 +1033,31 @@ load. A 10-minute interval keeps five minutes of slack.
 
 ### Measured timings
 
-Local, M-series machine, 10-ticker universe. **Not** production figures.
+Both columns measured, 10-ticker universe. Production is a Render free
+instance (512 MB, shared CPU) and runs **5-9x slower** than a local M-series
+machine on CPU-bound work.
 
-| Endpoint | Configuration | Time |
-|---|---|---|
-| `GET /health` | | 0.04 s |
-| `GET /api/securities` | 51 rows | 0.37 s |
-| `POST /api/risk/var` | 10k sims, 10-day | 0.49 s |
-| `POST /api/risk/var` | 200k sims, 60-day | 11.48 s |
-| `POST /api/portfolio/optimize` | 30 frontier points | 2.60 s |
-| `POST /api/backtest/run` | 8 years, monthly | 0.49 s |
-| `POST /api/backtest/bootstrap` | rolling, constant-mix, 61 windows | 1.91 s |
-| `POST /api/backtest/bootstrap` | rolling, **walk-forward**, 37 windows | 2.59 s |
-| `POST /api/backtest/bootstrap` | block × walk-forward, 10 resamples | 15.7 s |
-| `POST /api/backtest/bootstrap` | block × walk-forward, 50 resamples | 78.4 s |
-| `POST /api/backtest/bootstrap` | block × walk-forward, 100 resamples | 102.8 s |
+| Endpoint | Configuration | Local | **Production** |
+|---|---|---|---|
+| `GET /health` | warm | 0.04 s | **0.21 s** |
+| `GET /api/securities` | 51 rows | 0.37 s | **0.48 s** |
+| `POST /api/risk/var` | 10k sims, 10-day | 0.49 s | **0.81 s** |
+| `POST /api/risk/var` | 50k sims, 252-day | — | **17.9 s** |
+| `POST /api/portfolio/optimize` | 30 frontier points | 2.60 s | **12.26 s** |
+| `POST /api/backtest/run` | 8 years, monthly | 0.49 s | **3.17 s** |
+| `POST /api/backtest/bootstrap` | rolling, constant-mix, 61 windows | 1.91 s | **16.18 s** |
+| `POST /api/backtest/bootstrap` | rolling, **walk-forward**, 37 windows | 2.59 s | **24.18 s** |
+| `POST /api/backtest/bootstrap` | block × constant-mix, 150 resamples | — | **38.7 s** |
+| `POST /api/backtest/bootstrap` | block × walk-forward, 10 resamples | 15.7 s | **81.5 s** |
+| `POST /api/backtest/bootstrap` | block × walk-forward, 15 resamples | — | **129.9 s** |
+
+The 81.5 s request **completes normally** through Cloudflare and Render's
+proxy — HTTP 200, correct CORS headers, full 5,710-byte payload. Nothing in
+the chain times out, even though `time_starttransfer` equals `time_total`
+(the server sends no bytes at all until the result is ready, which is the
+pattern most likely to trip a proxy). A long request also does **not** block
+the single worker: `/health` answered in 0.3-0.8 s during an 81 s bootstrap,
+because FastAPI runs sync endpoints in a threadpool.
 
 Rolling windows stay cheap even with walk-forward because the optimiser result
 at a given rebalance date is identical across every window containing it, so it

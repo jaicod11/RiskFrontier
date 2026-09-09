@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchHealth, type HealthResponse } from "./health";
 
 /**
- * Render's free tier suspends an instance after 15 minutes idle, and the first
- * request then waits ~50 s for it to boot. Past this many seconds we stop
- * showing a plain spinner and say what is actually happening.
+ * Render's free tier suspends an instance after 15 minutes idle. The first
+ * request then waits for the container to boot and for Neon to resume —
+ * measured at 27.2 s and 26.4 s on this deployment. Past this many seconds we
+ * stop showing a plain spinner and say what is actually happening.
  */
 export const COLD_START_HINT_SECONDS = 2;
 

@@ -14,8 +14,10 @@
 #   practice less because the instance still sleeps during gaps. Roughly a
 #   third of the allowance stays free.
 #
-#   Outside that window a visitor pays one cold start (~50 s), which the
-#   frontend handles explicitly rather than appearing to hang.
+#   Outside that window a visitor pays one cold start. Measured at 27.2 s and
+#   26.4 s on this deployment (Neon resuming plus Render booting, since /health
+#   queries the database), which the frontend handles explicitly rather than
+#   appearing to hang.
 #
 # WHY EVERY 10 MINUTES:
 #
