@@ -7,6 +7,19 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _normalise_driver(url: str) -> str:
+    """Force the psycopg2 driver onto a connection string.
+
+    Render and some providers hand out the legacy "postgres://" scheme, which
+    SQLAlchemy 2 does not recognise.
+    """
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -34,7 +47,17 @@ class Settings(BaseSettings):
     postgres_db: str = "portfolio_risk"
 
     #: Full connection string. REQUIRED in production; overrides POSTGRES_*.
+    #: This is what the application's engine uses, so on Neon it should be the
+    #: POOLED endpoint — many short-lived requests are what the pooler is for.
     database_url: str | None = None
+
+    #: Optional direct (unpooled) connection string, used by Alembic only.
+    #: Neon's pooled endpoint runs in transaction pooling mode, which does not
+    #: preserve the session state Alembic relies on (advisory locks, session
+    #: -level settings, and DDL spanning statements), so migrations must use
+    #: the direct endpoint. Unset locally, where docker-compose has a single
+    #: Postgres and no pooling distinction — the fallback covers that.
+    database_url_unpooled: str | None = None
 
     # --- Connection pool ---------------------------------------------------
     # Sized for serverless Postgres behind a 512 MB instance: a handful of
@@ -106,16 +129,9 @@ class Settings(BaseSettings):
 
     @property
     def sqlalchemy_database_uri(self) -> str:
-        """Full SQLAlchemy connection string."""
+        """Connection string for the application engine."""
         if self.database_url:
-            # Render and some providers hand out the legacy "postgres://"
-            # scheme, which SQLAlchemy 2 does not recognise.
-            url = self.database_url
-            if url.startswith("postgres://"):
-                url = url.replace("postgres://", "postgresql://", 1)
-            if url.startswith("postgresql://"):
-                url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
-            return url
+            return _normalise_driver(self.database_url)
         return (
             f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"

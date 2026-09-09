@@ -563,3 +563,54 @@ def test_development_keeps_its_localhost_origins():
 
     dev = Settings()
     assert "http://localhost:5173" in dev.cors_origin_list
+
+
+def test_migrations_can_use_a_separate_unpooled_url(monkeypatch):
+    """Alembic must be able to bypass a transaction pooler.
+
+    Neon's pooled endpoint does not preserve the session state Alembic needs,
+    so migrations take DATABASE_URL_UNPOOLED when it is set while the
+    application engine keeps using the pooled DATABASE_URL.
+    """
+    import importlib.util
+    from pathlib import Path
+
+    from app.core.config import Settings
+
+    def migration_url_for(settings) -> str:
+        """Evaluate env.py's helper without entering a migration context."""
+        source = Path(__file__).resolve().parents[1] / "alembic" / "env.py"
+        namespace: dict = {}
+        prelude = source.read_text().split("config = context.config")[0]
+        exec(compile(prelude, "env.py", "exec"), namespace)  # noqa: S102
+        namespace["settings"] = settings
+        return namespace["migration_url"]()
+
+    assert importlib.util.find_spec("alembic") is not None
+
+    # Both set: the app uses the pooled URL, migrations use the direct one.
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@pooled-host/db")
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", "postgres://u:p@direct-host/db")
+    split = Settings()
+    assert "pooled-host" in split.sqlalchemy_database_uri
+    assert "direct-host" in migration_url_for(split)
+    # The legacy postgres:// scheme is normalised on this URL too.
+    assert migration_url_for(split).startswith("postgresql+psycopg2://")
+
+    # Only DATABASE_URL set: migrations fall back to it, which is local dev.
+    monkeypatch.delenv("DATABASE_URL_UNPOOLED", raising=False)
+    single = Settings()
+    assert single.database_url_unpooled is None
+    assert migration_url_for(single) == single.sqlalchemy_database_uri
+
+
+def test_app_engine_ignores_the_unpooled_url(monkeypatch):
+    """Only Alembic changes; the request path still uses the pooled URL."""
+    from app.core.config import Settings
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@pooled-host/db")
+    monkeypatch.setenv("DATABASE_URL_UNPOOLED", "postgresql://u:p@direct-host/db")
+    settings = Settings()
+
+    assert "pooled-host" in settings.sqlalchemy_database_uri
+    assert "direct-host" not in settings.sqlalchemy_database_uri

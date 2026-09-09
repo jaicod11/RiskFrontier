@@ -26,8 +26,14 @@ services:
         value: "false"
 
       # --- Secrets, set in the dashboard ---------------------------------
-      # Neon connection string. Must include ?sslmode=require.
+      # Neon POOLED connection string (host contains "-pooler"). Must include
+      # ?sslmode=require. This is what the application engine uses.
       - key: DATABASE_URL
+        sync: false
+      # Neon DIRECT connection string (same host without "-pooler"). Used by
+      # Alembic only: the pooled endpoint runs transaction pooling, which does
+      # not preserve the session state migrations need.
+      - key: DATABASE_URL_UNPOOLED
         sync: false
       # The deployed Vercel domain, e.g. https://riskfrontier\.vercel\.app
       # A regex covers preview deployments, which get a new subdomain per commit.

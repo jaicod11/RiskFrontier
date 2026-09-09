@@ -5,11 +5,25 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from app.core.config import settings
+from app.core.config import _normalise_driver, settings
 from app.models import Base  # noqa: F401  (imports every model onto Base.metadata)
 
+
+def migration_url() -> str:
+    """Connection string for migrations.
+
+    Prefers DATABASE_URL_UNPOOLED: Neon's pooled endpoint uses transaction
+    pooling, which does not preserve the session state Alembic needs. Falls
+    back to DATABASE_URL, which is what local development uses — docker-compose
+    runs a single Postgres with no pooling distinction, so no extra config.
+    """
+    if settings.database_url_unpooled:
+        return _normalise_driver(settings.database_url_unpooled)
+    return settings.sqlalchemy_database_uri
+
+
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
+config.set_main_option("sqlalchemy.url", migration_url())
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -20,7 +34,7 @@ target_metadata = Base.metadata
 def run_migrations_offline() -> None:
     """Emit SQL to stdout without connecting."""
     context.configure(
-        url=settings.sqlalchemy_database_uri,
+        url=migration_url(),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},

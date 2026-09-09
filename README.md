@@ -916,7 +916,8 @@ pool tuning — no model, migration or query was altered.
 
 1. **Neon** — create a project, copy the pooled connection string (it ends in
    `?sslmode=require`).
-2. **Schema** — `DATABASE_URL='<neon-url>' alembic upgrade head`. All three
+2. **Schema** — run Alembic against the **direct** (unpooled) endpoint:
+   `DATABASE_URL='<neon-direct-url>' alembic upgrade head`. All three
    migrations apply in one pass from an empty database.
 3. **Data** — seed by restore, *not* by re-ingesting:
    ```bash
@@ -938,9 +939,20 @@ pool tuning — no model, migration or query was altered.
    docker compose exec backend python -m app.scripts.run_ingestion --years 10
    docker compose exec backend python -m app.scripts.run_ingestion --tickers '^NSEI'
    ```
-4. **Render** — connect the repo; it reads `render.yaml`. Set the two values
-   marked `sync: false` in the dashboard: `DATABASE_URL` and
-   `CORS_ORIGIN_REGEX`.
+4. **Render** — connect the repo; it reads `render.yaml`. Set the three values
+   marked `sync: false` in the dashboard:
+
+   | Variable | Which Neon endpoint | Used by |
+   |---|---|---|
+   | `DATABASE_URL` | **pooled** (host contains `-pooler`) | the application engine |
+   | `DATABASE_URL_UNPOOLED` | **direct** (same host without `-pooler`) | Alembic only |
+   | `CORS_ORIGIN_REGEX` | — | CORS |
+
+   Neon's pooled endpoint uses transaction pooling, which does not preserve the
+   session state Alembic relies on, so migrations run over the direct
+   connection while ordinary request traffic uses the pooler. Locally only
+   `DATABASE_URL` is set and Alembic falls back to it — docker-compose runs a
+   single Postgres with no pooling distinction, so no extra config.
 5. **Vercel** — import `frontend/`, set `VITE_API_BASE_URL` to the Render URL.
    A production build with that variable unset throws at load with an explicit
    message rather than silently pointing visitors at their own localhost.

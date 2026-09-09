@@ -49,7 +49,11 @@ docker exec "${CONTAINER}" pg_dump \
 
 SIZE=$(du -h "${OUT}" | cut -f1)
 LINES=$(wc -l < "${OUT}" | tr -d ' ')
-echo "Wrote $OUT  ($SIZE, $ROWS INSERT statements)"
+COPIES=$(grep -c "^COPY " "${OUT}" || true)
+SETVALS=$(grep -c "^SELECT pg_catalog.setval" "${OUT}" || true)
+COPIES=$(grep -c "^COPY " "${OUT}" || true)
+SETVALS=$(grep -c "^SELECT pg_catalog.setval" "${OUT}" || true)
+echo "Wrote ${OUT}  (${SIZE}, ${LINES} lines, ${COPIES} COPY blocks, ${SETVALS} sequence resets)"
 echo
 echo "Row counts in the source database:"
 docker exec "${CONTAINER}" psql -U "${USER}" -d "${DB}" -t -c "
