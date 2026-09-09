@@ -2,11 +2,10 @@
 
 A portfolio risk and backtesting workbench for **NSE (India) listed equities**.
 
-> **Status: backend complete, frontend is still the Phase 0 scaffold.**
-> All three analytical components are implemented and tested — Monte Carlo
-> VaR/CVaR, Markowitz optimisation, and backtesting with bootstrapped
-> confidence ranges — over 10 years of ingested NSE data. The React app is
-> still the placeholder from the initial scaffold.
+> **Status: backend and frontend both complete.** All three analytical
+> components are implemented and tested — Monte Carlo VaR/CVaR, Markowitz
+> optimisation, and backtesting with bootstrapped confidence ranges — over 10
+> years of ingested NSE data, with a React frontend over the whole API.
 >
 > **Read [docs/LIMITATIONS.md](docs/LIMITATIONS.md) before quoting any number
 > from this project.** Several of the caveats there are large enough to reverse
@@ -749,6 +748,67 @@ frontend/
     components/       Layout, HealthStatus
     pages/            PortfolioBuilder ("/"), Results ("/results")
 ```
+
+## Frontend
+
+React + TypeScript + Tailwind in `frontend/`, charts by recharts.
+
+```bash
+cd frontend
+npm install
+npm run gen:types   # regenerate types from the backend's /openapi.json
+npm run dev         # http://localhost:5173
+```
+
+### Types are generated, not hand-written
+
+`src/api/schema.d.ts` is produced by `openapi-typescript` from the backend's own
+`/openapi.json`. Nothing in the frontend declares an API shape by hand, so a
+backend contract change surfaces as a type error rather than a runtime surprise
+— it caught two things during this build, including a field the API doesn't
+expose (see *Known gaps*).
+
+Re-run `npm run gen:types` after any backend schema change. Defaulted fields are
+generated as required, which keeps *responses* strict (the server always sends
+them) at the cost of slightly more explicit request bodies.
+
+### Errors
+
+One handler understands the `{error_code, message, details}` envelope and shows
+the backend's `message` verbatim. Those messages already name the offending
+ticker and its actual date range; replacing them with generic copy would throw
+away the useful part. On failure the form stays populated so a user can fix and
+retry.
+
+### Limitations rendering
+
+Every response's `limitations` array renders **inline and always visible** —
+no accordion, modal, tooltip or footer. The survivorship and benchmark
+price-index warnings are rendered *at the strategy-vs-Nifty-50 comparison
+itself*, since that is the comparison they undercut, selected by matching the
+API's text rather than by index so reordering or adding a backend caveat cannot
+silently drop one.
+
+Nothing is hardcoded: if the API returns no limitations, the UI says so in red
+rather than rendering an empty space, because a missing caveat is a defect.
+
+### Known gaps in the API that the frontend had to work around
+
+1. **No P&L distribution data.** `/api/risk/var` returns summary statistics
+   (VaR, CVaR, worst, best, mean) but not the simulated paths or histogram
+   bins, so a true histogram of the simulated distribution cannot be drawn.
+   The UI renders a grouped bar chart of the loss thresholds by method instead
+   and says why — inventing a shape from the summary would misrepresent the
+   simulation. *Fix: return histogram bin edges and counts from the existing
+   simulation.*
+2. **`is_benchmark` is not exposed.** `/api/securities` omits the
+   `is_benchmark` column that exists on the table, so the picker cannot
+   distinguish the index from investable constituents. It currently leans on
+   the API-provided `sector == "Index"` rather than hardcoding `^NSEI`.
+   *Fix: add `is_benchmark` to `SecuritySummary`.*
+
+Neither was worked around by fabricating data.
+
 
 ## API contract
 
