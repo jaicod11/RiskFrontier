@@ -750,6 +750,90 @@ frontend/
     pages/            PortfolioBuilder ("/"), Results ("/results")
 ```
 
+## API contract
+
+Interactive docs at <http://localhost:8000/docs>; the schema at
+`/openapi.json` is complete enough to generate a typed client from.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Service and database health |
+| `GET` | `/api/securities` | The ingested universe with price coverage |
+| `GET` | `/api/securities/{ticker}/prices` | Daily OHLCV for one security |
+| `POST` | `/api/risk/var` | Monte Carlo VaR / CVaR, two methods |
+| `POST` | `/api/portfolio/optimize` | Markowitz frontier and its two portfolios |
+| `POST` | `/api/backtest/run` | Backtest against two baselines |
+| `POST` | `/api/backtest/bootstrap` | Distribution of outcomes across windows |
+
+### One error shape
+
+Every failure — validation, domain, or unexpected — returns the same body:
+
+```json
+{"error_code": "INSUFFICIENT_COVERAGE", "message": "...", "details": {}}
+```
+
+Branch on `error_code`; `message` is written to be shown to a user, and names
+the offending ticker or value. Routers do not format errors: services raise
+domain exceptions that each declare their own code and status, and handlers in
+`main.py` do the rest.
+
+| `error_code` | Status | Raised when |
+|---|---|---|
+| `VALIDATION_ERROR` | 422 | Request body fails schema validation |
+| `INVALID_WEIGHTS` | 422 | Weights don't sum to 1, duplicate, or name a stranger |
+| `INVALID_PARAMETER` | 422 | A parameter is valid alone but unusable in context |
+| `REQUEST_LIMIT_EXCEEDED` | 422 | A request cap was exceeded |
+| `UNKNOWN_TICKER` | 422 | A POST body references a ticker not in the database |
+| `INSUFFICIENT_COVERAGE` | 422 | Price history doesn't span the requested range |
+| `INSUFFICIENT_LOOKBACK` | 422 | A strategy needs more history than exists before the start |
+| `INFEASIBLE_CONSTRAINTS` | 422 | e.g. `max_weight_per_asset` below `1/n` |
+| `OPTIMIZATION_FAILED` | 422 | The solver converged from no starting point |
+| `STRATEGY_CONTRACT_VIOLATION` | 422 | A `rebalance_fn` returned unusable weights |
+| `NOT_FOUND` | 404 | A path-addressed resource doesn't exist |
+| `INTERNAL_ERROR` | 500 | Unexpected — generic message out, full traceback logged |
+
+An unknown ticker is **404 in a path** (`/api/securities/NOPE/prices` — the
+addressed resource doesn't exist) and **422 in a body** (the request is
+well-formed but not satisfiable). Internal errors never leak exception text.
+
+### Request limits
+
+Caps derived from timings measured in earlier phases, defined in
+`app/core/limits.py`. Exceeding one returns 422 with `REQUEST_LIMIT_EXCEEDED`
+naming the parameter, value and limit — never a timeout.
+
+| Limit | Value | Basis |
+|---|---|---|
+| `n_sims` | 200,000 | 100k × 60d took 3.2 s |
+| `horizon_days` | 252 | One trading year |
+| `tickers` / `positions` | 50 | The full index universe |
+| `lookback_days` | 2,520 | ~10 years, the ingested history |
+| `n_frontier_points` | 200 | 30 points over 10 tickers took 1.4 s |
+| date range | 30 years | Longer than any available history |
+| `n_resamples` | 1,000 | 200 resamples took ~3 s |
+| `window_years` | 20 | Longer than the ingested decade |
+
+### CORS
+
+Origins come from `CORS_ORIGINS` (comma-separated) or `CORS_ORIGIN_REGEX` for
+hosts whose exact origin isn't known ahead of time — Vercel gives every preview
+deployment its own subdomain. Both are environment variables, so a deploy needs
+no code change.
+
+```bash
+CORS_ORIGIN_REGEX='https://.*\.vercel\.app'
+```
+
+### Response consistency
+
+Every analytical response carries a `data_window` of the same shape (what data
+actually backed the numbers) and a `limitations` array of plain strings. Every
+rupee amount ends in `_inr`, every percentage in `_pct`, every rate in `_bps`.
+Field names are snake_case throughout — asserted by tests that read the
+generated OpenAPI schema, so drift fails the build rather than reaching a client.
+
+
 ## Limitations
 
 Every caveat this project has accumulated is consolidated in

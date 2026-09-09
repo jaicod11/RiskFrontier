@@ -15,10 +15,11 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.errors import ErrorResponse, InvalidParameterError
 from app.models import DailyPrice, Security
 from app.services.data_ingestion import to_nse_symbol
 
-router = APIRouter(prefix="/api", tags=["securities"])
+router = APIRouter(prefix="/api/securities", tags=["securities"])
 
 #: Rows returned when the caller gives no date range.
 DEFAULT_PRICE_LIMIT = 1000
@@ -58,9 +59,16 @@ class PriceSeries(BaseModel):
 
 
 @router.get(
-    "/securities",
+    "",
     response_model=list[SecuritySummary],
-    summary="All securities with their price coverage",
+    summary="List all securities",
+    description=(
+        "Every ingested security with its price coverage: row count and first "
+        "and last available date. One aggregate query, so adding tickers does "
+        "not add round trips. Includes the benchmark index (`^NSEI`), "
+        "distinguishable by `is_benchmark`."
+    ),
+    response_description="Securities ordered by ticker",
 )
 def list_securities(db: Session = Depends(get_db)) -> list[SecuritySummary]:
     """One aggregate query -- no per-security follow-up round trips."""
@@ -92,9 +100,19 @@ def list_securities(db: Session = Depends(get_db)) -> list[SecuritySummary]:
 
 
 @router.get(
-    "/securities/{ticker}/prices",
+    "/{ticker}/prices",
     response_model=PriceSeries,
     summary="Daily OHLCV for one security",
+    description=(
+        "Accepts either ticker form (`RELIANCE` or `RELIANCE.NS`). With no date "
+        "range the most recent 1000 bars are returned, still in ascending date "
+        "order. Prices are as ingested: the `price_anomalies` overlay is applied "
+        "when deriving returns, not to these raw bars."
+    ),
+    responses={
+        404: {"model": ErrorResponse, "description": "Ticker not in the database"},
+        422: {"model": ErrorResponse, "description": "Invalid date range"},
+    },
 )
 def get_prices(
     ticker: str,
@@ -110,10 +128,16 @@ def get_prices(
     symbol = to_nse_symbol(ticker)
     security = db.scalar(select(Security).where(Security.ticker == symbol))
     if security is None:
+        # A path-addressed resource that does not exist is a 404. Unknown
+        # tickers inside a POST body are 422 instead — the body is well-formed
+        # but not satisfiable.
         raise HTTPException(status_code=404, detail=f"Unknown ticker: {ticker}")
 
     if start and end and start > end:
-        raise HTTPException(status_code=400, detail="start must not be after end")
+        raise InvalidParameterError(
+            f"start ({start}) must not be after end ({end})",
+            details={"start": str(start), "end": str(end)},
+        )
 
     stmt = select(DailyPrice).where(DailyPrice.security_id == security.id)
     if start:

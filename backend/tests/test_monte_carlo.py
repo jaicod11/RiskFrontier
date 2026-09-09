@@ -265,7 +265,7 @@ def test_weights_must_sum_to_one():
                 {"ticker": "RELIANCE", "weight": 0.5},
                 {"ticker": "TCS", "weight": 0.3},
             ],
-            total_value=1_000_000,
+            total_value_inr=1_000_000,
         )
 
 
@@ -273,7 +273,7 @@ def test_weight_error_names_the_actual_sum():
     with pytest.raises(ValueError) as excinfo:
         Portfolio(
             positions=[{"ticker": "RELIANCE", "weight": 0.8}],
-            total_value=1_000_000,
+            total_value_inr=1_000_000,
         )
     message = str(excinfo.value)
     assert "0.800000" in message
@@ -287,7 +287,7 @@ def test_rounding_tolerance_is_accepted():
             {"ticker": "B", "weight": 0.333333},
             {"ticker": "C", "weight": 0.333334},
         ],
-        total_value=1_000_000,
+        total_value_inr=1_000_000,
     )
     assert len(portfolio.positions) == 3
 
@@ -299,14 +299,14 @@ def test_duplicate_tickers_rejected():
                 {"ticker": "RELIANCE", "weight": 0.5},
                 {"ticker": "RELIANCE.NS", "weight": 0.5},
             ],
-            total_value=1_000_000,
+            total_value_inr=1_000_000,
         )
 
 
 def test_ticker_suffix_is_normalised():
     portfolio = Portfolio(
         positions=[{"ticker": "reliance.ns", "weight": 1.0}],
-        total_value=1_000_000,
+        total_value_inr=1_000_000,
     )
     assert portfolio.tickers == ["RELIANCE"]
 
@@ -314,5 +314,5 @@ def test_ticker_suffix_is_normalised():
 def test_total_value_must_be_positive():
     with pytest.raises(ValueError):
         Portfolio(
-            positions=[{"ticker": "RELIANCE", "weight": 1.0}], total_value=0
+            positions=[{"ticker": "RELIANCE", "weight": 1.0}], total_value_inr=0
         )

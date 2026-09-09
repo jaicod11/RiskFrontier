@@ -32,13 +32,14 @@ from sqlalchemy.orm import Session
 
 from app.models import DailyPrice, Security
 from app.services.anomalies import get_excluded_dates
+from app.core.errors import (
+    InsufficientCoverageError,
+    InvalidParameterError,
+    UnknownTickerError,
+)
 from app.core.tickers import to_nse_symbol
 
 logger = logging.getLogger(__name__)
-
-
-class UnknownTickerError(LookupError):
-    """Raised when a ticker is not present in ``securities``."""
 
 
 def get_daily_returns(
@@ -180,9 +181,9 @@ def build_returns_matrix(
         if symbol not in symbols:
             symbols.append(symbol)
     if not symbols:
-        raise ValueError("At least one ticker is required")
+        raise InvalidParameterError("At least one ticker is required")
     if lookback_days < 2:
-        raise ValueError("lookback_days must be at least 2")
+        raise InvalidParameterError("lookback_days must be at least 2")
 
     # Cheap per-ticker bounds first, so the fetch below can be narrowed.
     bounds_stmt = (
@@ -208,8 +209,9 @@ def build_returns_matrix(
         unknown = [s for s in missing if s not in known]
         if unknown:
             raise UnknownTickerError(f"Unknown ticker(s): {', '.join(sorted(unknown))}")
-        raise ValueError(
-            f"No price history for: {', '.join(sorted(missing))}. Run the ingestion."
+        raise InsufficientCoverageError(
+            f"No price history for: {', '.join(sorted(missing))}. Run the ingestion.",
+            details={"tickers": sorted(missing)},
         )
 
     window_end = min(last for _, last in bounds.values())
@@ -230,16 +232,18 @@ def build_returns_matrix(
     for symbol in symbols:
         series = get_daily_returns(db, symbol, fetch_start, window_end)
         if series.empty:
-            raise ValueError(
-                f"{symbol} has no returns in the window ending {window_end}"
+            raise InsufficientCoverageError(
+                f"{symbol} has no returns in the window ending {window_end}",
+                details={"ticker": symbol},
             )
         columns.append(series)
 
     frame = pd.concat(columns, axis=1, join="inner").dropna()
     if len(frame) < 2:
-        raise ValueError(
+        raise InsufficientCoverageError(
             "Fewer than 2 overlapping trading days across "
-            f"{', '.join(symbols)} — cannot compute returns"
+            f"{', '.join(symbols)} — cannot compute returns",
+            details={"tickers": symbols},
         )
 
     if len(frame) > lookback_days:

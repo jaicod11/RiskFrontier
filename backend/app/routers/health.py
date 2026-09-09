@@ -3,6 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,7 +16,22 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["health"])
 
 
-@router.get("/health", summary="Service and database health")
+class HealthStatus(BaseModel):
+    status: str = Field(description='"ok" when the database round-trips')
+    db: str = Field(description='"connected" or "disconnected"')
+
+
+@router.get(
+    "/health",
+    response_model=HealthStatus,
+    summary="Service and database health",
+    description=(
+        "Returns 200 with `db: connected` only if a trivial query round-trips "
+        "to Postgres. Returns 503 with `db: disconnected` otherwise, in the "
+        "same shape, so a client can parse either outcome identically."
+    ),
+    responses={503: {"model": HealthStatus, "description": "Database unreachable"}},
+)
 def health(db: Session = Depends(get_db)) -> JSONResponse:
     """Return 200 with db="connected" only if a trivial query round-trips."""
     try:

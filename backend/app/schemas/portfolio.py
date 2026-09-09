@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.core.errors import InvalidWeightsError
+from app.core.limits import MAX_TICKERS, enforce_max
 from app.core.tickers import to_nse_symbol
 
 #: Weights are floats, so an exact sum of 1.0 is not a reasonable demand.
@@ -47,25 +49,31 @@ class Portfolio(BaseModel):
     """
 
     positions: list[Position] = Field(min_length=1)
-    total_value: float = Field(gt=0, description="Total portfolio value in INR")
+    total_value_inr: float = Field(
+        gt=0, description="Total portfolio value, in INR"
+    )
 
     @model_validator(mode="after")
     def _validate_book(self) -> "Portfolio":
         tickers = [p.ticker for p in self.positions]
 
+        enforce_max(len(tickers), MAX_TICKERS, "positions")
+
         duplicates = sorted({t for t in tickers if tickers.count(t) > 1})
         if duplicates:
-            raise ValueError(
+            raise InvalidWeightsError(
                 f"Duplicate tickers in portfolio: {', '.join(duplicates)}. "
-                "Combine them into a single position."
+                "Combine them into a single position.",
+                details={"duplicates": duplicates},
             )
 
         total = sum(p.weight for p in self.positions)
         if abs(total - 1.0) > WEIGHT_SUM_TOLERANCE:
             breakdown = ", ".join(f"{p.ticker}={p.weight:g}" for p in self.positions)
-            raise ValueError(
+            raise InvalidWeightsError(
                 f"Portfolio weights must sum to 1.0, got {total:.6f} "
-                f"(off by {total - 1.0:+.6f}). Weights given: {breakdown}"
+                f"(off by {total - 1.0:+.6f}). Weights given: {breakdown}",
+                details={"sum": total, "expected": 1.0},
             )
         return self
 

@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from app.services.backtest import BacktestRun, InsufficientCoverageError
+from app.core.errors import InsufficientLookbackError, InvalidParameterError
+from app.services.backtest import BacktestRun
 from app.services.markowitz import (
     DEFAULT_MAX_WEIGHT_PER_ASSET,
     DEFAULT_RISK_FREE_RATE,
@@ -39,10 +40,6 @@ logger = logging.getLogger(__name__)
 OBJECTIVES = ("max_sharpe", "min_variance")
 
 DEFAULT_WALK_FORWARD_LOOKBACK = 504
-
-
-class InsufficientLookbackError(InsufficientCoverageError):
-    """The backtest start has less history behind it than the strategy needs."""
 
 
 @dataclass
@@ -84,11 +81,13 @@ class WalkForwardStrategy:
         cache: dict | None = None,
     ) -> None:
         if objective not in OBJECTIVES:
-            raise ValueError(
+            raise InvalidParameterError(
                 f"objective must be one of {OBJECTIVES}, got {objective!r}"
             )
         if lookback_days < 2:
-            raise ValueError(f"lookback_days must be at least 2, got {lookback_days}")
+            raise InvalidParameterError(
+                f"lookback_days must be at least 2, got {lookback_days}"
+            )
 
         available = len(warmup_prices)
         if available < lookback_days:
@@ -129,7 +128,7 @@ class WalkForwardStrategy:
         # all-NaN on concat and quietly empty the trailing window, degrading the
         # strategy to "hold previous" without anything looking broken. Fail loudly.
         if len(self.warmup_prices) and set(self.warmup_prices.columns) != set(tickers):
-            raise ValueError(
+            raise InvalidParameterError(
                 "walk-forward warmup columns do not match the backtest universe: "
                 f"warmup has {sorted(self.warmup_prices.columns)}, "
                 f"backtest has {sorted(tickers)}"

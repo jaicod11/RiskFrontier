@@ -423,7 +423,7 @@ def test_endpoint_can_omit_the_window_array(client):
 def test_constant_mix_without_weights_rejected(client):
     response = _post(client, strategy={"kind": "constant_mix"})
     assert response.status_code == 422
-    assert "target_weights" in str(response.json()["detail"])
+    assert response.json()["error_code"] == "INVALID_WEIGHTS"
 
 
 def test_bad_weights_rejected(client):

@@ -31,6 +31,7 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 
+from app.core.errors import InvalidParameterError
 from app.schemas.risk import MethodResult, VarEstimate
 
 logger = logging.getLogger(__name__)
@@ -63,26 +64,26 @@ def _validate_inputs(
     horizon_days: int,
 ) -> np.ndarray:
     if returns_df.empty:
-        raise ValueError("returns_df is empty — no data to simulate from")
+        raise InvalidParameterError("returns_df is empty — no data to simulate from")
     if len(returns_df) < 2:
-        raise ValueError(
+        raise InvalidParameterError(
             f"Need at least 2 days of returns, got {len(returns_df)}"
         )
     if len(weights) != returns_df.shape[1]:
-        raise ValueError(
+        raise InvalidParameterError(
             f"Got {len(weights)} weights for {returns_df.shape[1]} tickers "
             f"({', '.join(map(str, returns_df.columns))})"
         )
     if total_value <= 0:
-        raise ValueError(f"total_value must be positive, got {total_value}")
+        raise InvalidParameterError(f"total_value must be positive, got {total_value}")
     if n_sims < 1:
-        raise ValueError(f"n_sims must be at least 1, got {n_sims}")
+        raise InvalidParameterError(f"n_sims must be at least 1, got {n_sims}")
     if horizon_days < 1:
-        raise ValueError(f"horizon_days must be at least 1, got {horizon_days}")
+        raise InvalidParameterError(f"horizon_days must be at least 1, got {horizon_days}")
 
     w = np.asarray(weights, dtype=np.float64)
     if not np.all(np.isfinite(w)):
-        raise ValueError("weights must all be finite")
+        raise InvalidParameterError("weights must all be finite")
     return w
 
 

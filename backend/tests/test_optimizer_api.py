@@ -148,12 +148,14 @@ def test_window_is_reported_like_phase_three(client):
 def test_infeasible_cap_returns_422_with_guidance(client):
     response = _post(client, max_weight_per_asset=0.1)  # 5 * 0.1 = 0.5
     assert response.status_code == 422
-    assert "0.2" in str(response.json()["detail"])  # suggests 1/n
+    assert response.json()["error_code"] == "INFEASIBLE_CONSTRAINTS"
+    assert "0.2" in response.json()["message"]  # suggests 1/n
 
 
-def test_unknown_ticker_returns_404(client):
+def test_unknown_ticker_in_body_returns_422(client):
     response = _post(client, tickers=["RELIANCE", "NOTATICKER"])
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "UNKNOWN_TICKER"
 
 
 def test_at_least_two_tickers_required(client):
@@ -238,7 +240,7 @@ def test_optimizer_and_var_agree_on_the_window(client):
         json={
             "portfolio": {
                 "positions": [{"ticker": t, "weight": 0.2} for t in UNIVERSE],
-                "total_value": 1_000_000,
+                "total_value_inr": 1_000_000,
             },
             "n_sims": 1_000,
             "lookback_days": 504,

@@ -5,8 +5,14 @@ from __future__ import annotations
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.limitations import OPTIMIZER_LIMITATIONS
+from app.core.limits import (
+    MAX_FRONTIER_POINTS,
+    MAX_LOOKBACK_DAYS,
+    MAX_TICKERS,
+    enforce_max,
+)
 from app.core.tickers import to_nse_symbol
-from app.schemas.risk import DataWindow
+from app.schemas.common import DataWindow
 from app.services.markowitz import (
     DEFAULT_FRONTIER_POINTS,
     DEFAULT_MAX_WEIGHT_PER_ASSET,
@@ -24,6 +30,24 @@ class OptimizedPortfolio(BaseModel):
 
 
 class OptimizeRequest(BaseModel):
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "tickers": [
+                        "RELIANCE", "TCS", "HDFCBANK", "INFY", "ITC",
+                        "SUNPHARMA", "MARUTI", "NTPC",
+                    ],
+                    "risk_free_rate": 0.065,
+                    "max_weight_per_asset": 0.35,
+                    "lookback_days": 504,
+                    "n_frontier_points": 30,
+                    "seed": 0,
+                }
+            ]
+        }
+    }
+
     tickers: list[str] = Field(
         min_length=2,
         description="Candidate universe; the optimiser determines the weights",
@@ -39,8 +63,16 @@ class OptimizeRequest(BaseModel):
         default=False,
         description="Permit negative weights, bounded by -max_weight_per_asset",
     )
-    lookback_days: int = Field(default=504, ge=30, le=2520)
-    n_frontier_points: int = Field(default=DEFAULT_FRONTIER_POINTS, ge=2, le=200)
+    lookback_days: int = Field(
+        default=504, ge=30,
+        description=f"Estimation window in trading days (max {MAX_LOOKBACK_DAYS:,})",
+        json_schema_extra={"maximum": MAX_LOOKBACK_DAYS},
+    )
+    n_frontier_points: int = Field(
+        default=DEFAULT_FRONTIER_POINTS, ge=2,
+        description=f"Points to trace along the frontier (max {MAX_FRONTIER_POINTS})",
+        json_schema_extra={"maximum": MAX_FRONTIER_POINTS},
+    )
     seed: int | None = Field(
         default=0, description="Seeds the optimiser's random restarts"
     )
@@ -59,7 +91,18 @@ class OptimizeRequest(BaseModel):
             raise ValueError(
                 "At least 2 distinct tickers are required to optimise a portfolio"
             )
+        enforce_max(len(seen), MAX_TICKERS, "tickers")
         return seen
+
+    @field_validator("lookback_days")
+    @classmethod
+    def _cap_lookback(cls, value: int) -> int:
+        return enforce_max(value, MAX_LOOKBACK_DAYS, "lookback_days", "trading days")
+
+    @field_validator("n_frontier_points")
+    @classmethod
+    def _cap_points(cls, value: int) -> int:
+        return enforce_max(value, MAX_FRONTIER_POINTS, "n_frontier_points")
 
 
 class OptimizeResponse(BaseModel):

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-import datetime as dt
-
 from pydantic import BaseModel, Field, field_validator
 
 from app.core.limitations import VAR_LIMITATIONS
+from app.core.limits import (
+    MAX_HORIZON_DAYS,
+    MAX_LOOKBACK_DAYS,
+    MAX_N_SIMS,
+    enforce_max,
+)
+from app.schemas.common import DataWindow
 from app.schemas.portfolio import Portfolio
 
 class VarEstimate(BaseModel):
@@ -30,35 +35,64 @@ class MethodResult(BaseModel):
     best_simulated_pnl_inr: float
 
 
-class DataWindow(BaseModel):
-    """Which data actually backed the estimate."""
-
-    start: dt.date
-    end: dt.date
-    trading_days: int
-    requested_lookback_days: int
-    shrunk: bool = Field(
-        description="True when the window is shorter than requested"
-    )
-    constrained_by: str | None = Field(
-        default=None, description="Ticker whose history bound the window"
-    )
-    constraint_reason: str | None = None
-    first_available_date_by_ticker: dict[str, dt.date] = Field(
-        default_factory=dict,
-        description="True start of each ticker's price history",
-    )
-
-
 class VarRequest(BaseModel):
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "portfolio": {
+                        "positions": [
+                            {"ticker": "RELIANCE", "weight": 0.4},
+                            {"ticker": "TCS", "weight": 0.3},
+                            {"ticker": "HDFCBANK", "weight": 0.3},
+                        ],
+                        "total_value_inr": 1000000,
+                    },
+                    "n_sims": 10000,
+                    "horizon_days": 10,
+                    "confidence_levels": [0.95, 0.99],
+                    "lookback_days": 504,
+                    "seed": 42,
+                }
+            ]
+        }
+    }
+
     portfolio: Portfolio
-    n_sims: int = Field(default=10_000, ge=100, le=200_000)
-    horizon_days: int = Field(default=1, ge=1, le=252)
+    n_sims: int = Field(
+        default=10_000, ge=100,
+        description=f"Simulation paths (max {MAX_N_SIMS:,})",
+        json_schema_extra={"maximum": MAX_N_SIMS},
+    )
+    horizon_days: int = Field(
+        default=1, ge=1,
+        description=f"Trading days to simulate forward (max {MAX_HORIZON_DAYS})",
+        json_schema_extra={"maximum": MAX_HORIZON_DAYS},
+    )
     confidence_levels: list[float] = Field(default=[0.95, 0.99])
-    lookback_days: int = Field(default=504, ge=30, le=2520)
+    lookback_days: int = Field(
+        default=504, ge=30,
+        description=f"Estimation window in trading days (max {MAX_LOOKBACK_DAYS:,})",
+        json_schema_extra={"maximum": MAX_LOOKBACK_DAYS},
+    )
     seed: int | None = Field(
         default=None, description="Set for reproducible simulations"
     )
+
+    @field_validator("n_sims")
+    @classmethod
+    def _cap_sims(cls, value: int) -> int:
+        return enforce_max(value, MAX_N_SIMS, "n_sims")
+
+    @field_validator("horizon_days")
+    @classmethod
+    def _cap_horizon(cls, value: int) -> int:
+        return enforce_max(value, MAX_HORIZON_DAYS, "horizon_days", "trading days")
+
+    @field_validator("lookback_days")
+    @classmethod
+    def _cap_lookback(cls, value: int) -> int:
+        return enforce_max(value, MAX_LOOKBACK_DAYS, "lookback_days", "trading days")
 
     @field_validator("confidence_levels")
     @classmethod
@@ -76,7 +110,9 @@ class VarRequest(BaseModel):
 class VarResponse(BaseModel):
     """Both methods side by side, plus the context needed to read them."""
 
-    total_value: float
+    total_value_inr: float = Field(
+        description="Portfolio value the P&L figures are denominated against"
+    )
     tickers: list[str]
     weights: dict[str, float]
     n_sims: int

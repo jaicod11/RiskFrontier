@@ -36,13 +36,20 @@ import pandas as pd
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.errors import (
+    InsufficientCoverageError,
+    InvalidParameterError,
+    InvalidWeightsError,
+    StrategyContractError,
+    UnknownTickerError,
+)
 from app.core.tickers import to_nse_symbol
 from app.models import DailyPrice, Security
 from app.services.markowitz import (  # single source of truth for the rate
     DEFAULT_RISK_FREE_RATE,
     TRADING_DAYS_PER_YEAR,
 )
-from app.services.returns import UnknownTickerError, get_daily_returns
+from app.services.returns import get_daily_returns
 
 logger = logging.getLogger(__name__)
 
@@ -59,14 +66,6 @@ _WEIGHT_TOLERANCE = 1e-6
 
 #: ``(as_of_date, price_history_through_as_of_date) -> {ticker: weight}``
 RebalanceFn = Callable[[dt.date, pd.DataFrame], dict[str, float]]
-
-
-class InsufficientCoverageError(ValueError):
-    """A requested ticker does not span the whole requested backtest window."""
-
-
-class StrategyContractError(ValueError):
-    """A ``rebalance_fn`` returned weights the engine cannot act on."""
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +149,7 @@ def build_price_matrix(
     cannot cover the requested period must fail loudly.
     """
     if start_date >= end_date:
-        raise ValueError(
+        raise InvalidParameterError(
             f"start_date ({start_date}) must be before end_date ({end_date})"
         )
 
@@ -160,7 +159,7 @@ def build_price_matrix(
         if symbol not in symbols:
             symbols.append(symbol)
     if not symbols:
-        raise ValueError("At least one ticker is required")
+        raise InvalidParameterError("At least one ticker is required")
 
     bounds = _coverage_bounds(db, symbols)
 
@@ -235,8 +234,9 @@ def _reconstruct_prices(
 
     returns = get_daily_returns(db, symbol, start_date, end_date)
     if not returns.index.equals(index[1:]):
-        # The two queries must see the same bars; if they ever diverge, stop
-        # rather than silently misalign prices and returns.
+        # The two queries must see the same bars; if they ever diverge that is
+        # an internal invariant violation, not a caller error — deliberately a
+        # RuntimeError so it surfaces as a 500 and gets logged with a traceback.
         raise RuntimeError(
             f"{symbol}: return series does not align with the price bars "
             f"({len(returns)} returns for {len(index) - 1} price steps)"
@@ -275,7 +275,7 @@ def rebalance_calendar(
         def period(day: dt.date) -> tuple[int, int]:
             return (day.year, (day.month - 1) // 3)
     else:
-        raise ValueError(
+        raise InvalidParameterError(
             f"Unsupported rebalance_frequency {frequency!r}; "
             "expected 'monthly' or 'quarterly'"
         )
@@ -305,8 +305,9 @@ def constant_mix_strategy(target_weights: dict[str, float]) -> RebalanceFn:
     frozen = {to_nse_symbol(t): float(w) for t, w in target_weights.items()}
     total = sum(frozen.values())
     if abs(total - 1.0) > _WEIGHT_TOLERANCE:
-        raise ValueError(
-            f"target_weights must sum to 1.0, got {total:.6f} ({frozen})"
+        raise InvalidWeightsError(
+            f"target_weights must sum to 1.0, got {total:.6f} ({frozen})",
+            details={"weights": frozen, "sum": total},
         )
 
     def rebalance(as_of: dt.date, history: pd.DataFrame) -> dict[str, float]:
@@ -365,18 +366,18 @@ def run_backtest(
     truncation-invariance test.
     """
     if prices.empty:
-        raise ValueError("prices is empty")
+        raise InvalidParameterError("prices is empty")
     if initial_capital <= 0:
-        raise ValueError(f"initial_capital must be positive, got {initial_capital}")
+        raise InvalidParameterError(f"initial_capital must be positive, got {initial_capital}")
     if transaction_cost_bps < 0:
-        raise ValueError(
+        raise InvalidParameterError(
             f"transaction_cost_bps must not be negative, got {transaction_cost_bps}"
         )
 
     tickers = list(prices.columns)
     matrix = prices.to_numpy(dtype=np.float64)
     if not np.all(np.isfinite(matrix)) or np.any(matrix <= 0):
-        raise ValueError("prices must be finite and strictly positive")
+        raise InvalidParameterError("prices must be finite and strictly positive")
 
     index = prices.index
     as_dates = [d.date() if hasattr(d, "date") else d for d in index]
@@ -456,7 +457,7 @@ def compute_metrics(
     """
     values = run.values
     if len(values) < 2:
-        raise ValueError("Need at least 2 valuation points to compute metrics")
+        raise InvalidParameterError("Need at least 2 valuation points to compute metrics")
 
     start_value = float(values.iloc[0])
     end_value = float(values.iloc[-1])

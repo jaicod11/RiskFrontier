@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # Comma-separated list, e.g. "http://localhost:5173,http://127.0.0.1:5173"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Regex alternative, for hosts whose exact origin is not known ahead of
+    # time — Vercel preview deployments get a new subdomain per commit.
+    # e.g. CORS_ORIGIN_REGEX=https://.*\\.vercel\\.app
+    cors_origin_regex: str = ""
+
     # --- Market data -------------------------------------------------------
     # NSE tickers on Yahoo Finance carry a ".NS" suffix (e.g. RELIANCE.NS).
     default_exchange: str = "NSE"

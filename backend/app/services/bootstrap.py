@@ -22,12 +22,16 @@ import pandas as pd
 from dateutil.relativedelta import relativedelta
 from sqlalchemy.orm import Session
 
+from app.core.errors import (
+    InsufficientCoverageError,
+    InsufficientLookbackError,
+    InvalidParameterError,
+)
 from app.core.tickers import to_nse_symbol
 from app.services.backtest import (
     BENCHMARK_TICKER,
     DEFAULT_TRANSACTION_COST_BPS,
     BacktestMetrics,
-    InsufficientCoverageError,
     build_price_matrix,
     compute_metrics,
     constant_mix_strategy,
@@ -40,7 +44,6 @@ from app.services.markowitz import (
 )
 from app.services.strategies import (
     DEFAULT_WALK_FORWARD_LOOKBACK,
-    InsufficientLookbackError,
     WalkForwardStrategy,
     average_turnover,
 )
@@ -126,6 +129,10 @@ class BootstrapResult:
     strategy_kind: str
     summaries: dict[str, dict[str, MetricSummary]]
     win_rates: WinRates
+    #: Full span the windows or resamples were drawn from.
+    data_start: dt.date | None = None
+    data_end: dt.date | None = None
+    data_trading_days: int = 0
     windows: list[WindowResult] = field(default_factory=list)
     total_rebalances: int = 0
     total_optimizer_failures: int = 0
@@ -158,9 +165,9 @@ def stationary_block_indices(
     blocks preserves the runs, and with them the tail behaviour that matters.
     """
     if n <= 0:
-        raise ValueError("Cannot resample an empty series")
+        raise InvalidParameterError("Cannot resample an empty series")
     if length <= 0:
-        raise ValueError("length must be positive")
+        raise InvalidParameterError("length must be positive")
 
     probability = 1.0 / max(expected_block, 1)
     indices = np.empty(length, dtype=np.int64)
@@ -196,7 +203,7 @@ def rolling_windows(
     if not trading_dates:
         return []
     if window_years <= 0:
-        raise ValueError("window_years must be positive")
+        raise InvalidParameterError("window_years must be positive")
     if warmup_days >= len(trading_dates):
         return []
 
@@ -414,7 +421,7 @@ def bootstrap_backtest(
         if symbol not in symbols:
             symbols.append(symbol)
     if not symbols:
-        raise ValueError("At least one ticker is required")
+        raise InvalidParameterError("At least one ticker is required")
 
     # One matrix over all available history, sliced per window. The benchmark is
     # inner-joined here so every window shares one calendar, exactly as a single
@@ -444,7 +451,7 @@ def bootstrap_backtest(
             n_resamples, expected_block_days, seed,
         )
     else:
-        raise ValueError(
+        raise InvalidParameterError(
             f"method must be 'rolling_windows' or 'block_bootstrap', got {method!r}"
         )
 
@@ -548,7 +555,12 @@ def _rolling(
             "Every candidate window was skipped: " + "; ".join(skipped[:3])
         )
 
-    return _assemble("rolling_windows", window_years, windows, skipped)
+    return _assemble(
+        "rolling_windows", window_years, windows, skipped,
+        data_start=trading_dates[0],
+        data_end=trading_dates[-1],
+        data_trading_days=len(trading_dates),
+    )
 
 
 def _block(
@@ -579,7 +591,7 @@ def _block(
     warmup_days = config.warmup_days()
     total_days = window_days + warmup_days
     if total_days < 2:
-        raise ValueError("window_years is too small to simulate")
+        raise InvalidParameterError("window_years is too small to simulate")
 
     rng = np.random.default_rng(seed)
     columns = list(combined.columns)
@@ -633,7 +645,14 @@ def _block(
         raise InsufficientLookbackError(
             "Every resample was skipped: " + "; ".join(skipped[:3])
         )
-    return _assemble("block_bootstrap", window_years, windows, skipped)
+    # For resamples the underlying span is the real history they were drawn from.
+    source_dates = [d.date() for d in combined.index]
+    return _assemble(
+        "block_bootstrap", window_years, windows, skipped,
+        data_start=source_dates[0],
+        data_end=source_dates[-1],
+        data_trading_days=len(source_dates),
+    )
 
 
 def _assemble(
@@ -641,6 +660,9 @@ def _assemble(
     window_years: float,
     windows: list[WindowResult],
     skipped: list[str],
+    data_start: dt.date | None = None,
+    data_end: dt.date | None = None,
+    data_trading_days: int = 0,
 ) -> BootstrapResult:
     turnovers = [w.average_turnover for w in windows if w.average_turnover > 0]
     return BootstrapResult(
@@ -656,4 +678,7 @@ def _assemble(
         total_optimizer_failures=sum(w.n_optimizer_failures for w in windows),
         average_turnover_per_rebalance=float(np.mean(turnovers)) if turnovers else 0.0,
         skipped_windows=skipped,
+        data_start=data_start,
+        data_end=data_end,
+        data_trading_days=data_trading_days,
     )

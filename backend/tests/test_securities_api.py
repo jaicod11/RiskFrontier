@@ -35,7 +35,9 @@ def test_list_securities_returns_coverage_shape(client):
 def test_prices_unknown_ticker_returns_404(client):
     response = client.get("/api/securities/NOTATICKER/prices")
     assert response.status_code == 404
-    assert "Unknown ticker" in response.json()["detail"]
+    payload = response.json()
+    assert payload["error_code"] == "NOT_FOUND"
+    assert "Unknown ticker" in payload["message"]
 
 
 def test_prices_rejects_inverted_range(client):
@@ -43,7 +45,8 @@ def test_prices_rejects_inverted_range(client):
         "/api/securities/RELIANCE/prices",
         params={"start": "2024-06-01", "end": "2024-01-01"},
     )
-    assert response.status_code in (400, 404)
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "INVALID_PARAMETER"
 
 
 def test_prices_are_capped_and_ascending_without_a_range(client):

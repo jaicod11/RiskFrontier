@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
+from app.core.errors import ErrorResponse
+from app.schemas.common import DataWindow
 from app.schemas.bootstrap import (
     BootstrapRequest,
     BootstrapResponse,
@@ -17,7 +19,6 @@ from app.schemas.bootstrap import (
     WinRatesOut,
 )
 from app.services.bootstrap import StrategyConfig, bootstrap_backtest
-from app.services.strategies import InsufficientLookbackError
 from app.schemas.backtest import (
     BacktestRequest,
     BacktestResponse,
@@ -28,11 +29,8 @@ from app.schemas.backtest import (
 from app.services.backtest import (
     BacktestMetrics,
     BacktestRun,
-    InsufficientCoverageError,
-    StrategyContractError,
     run_strategy_with_baselines,
 )
-from app.services.returns import UnknownTickerError
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +53,10 @@ _DESCRIPTIONS = {
 
 
 def _metrics(metrics: BacktestMetrics) -> PerformanceMetrics:
-    return PerformanceMetrics(**vars(metrics))
+    fields = dict(vars(metrics))
+    fields["start_value_inr"] = fields.pop("start_value")
+    fields["end_value_inr"] = fields.pop("end_value")
+    return PerformanceMetrics(**fields)
 
 
 def _series(label: str, run: BacktestRun, metrics: BacktestMetrics) -> BacktestSeries:
@@ -64,7 +65,7 @@ def _series(label: str, run: BacktestRun, metrics: BacktestMetrics) -> BacktestS
         description=_DESCRIPTIONS[label],
         metrics=_metrics(metrics),
         values=[
-            ValuePoint(date=index.date(), value=float(value))
+            ValuePoint(date=index.date(), value_inr=float(value))
             for index, value in run.values.items()
         ],
     )
@@ -73,25 +74,41 @@ def _series(label: str, run: BacktestRun, metrics: BacktestMetrics) -> BacktestS
 @router.post(
     "/run",
     response_model=BacktestResponse,
-    summary="Backtest a constant-mix strategy against two baselines",
+    summary="Backtest a strategy against two baselines",
+    description=(
+        "Simulates a constant-mix strategy day by day and runs two baselines "
+        "over the same calendar: the same holdings bought once and never "
+        "rebalanced, and the Nifty 50 index.\n\n"
+        "Share counts are the state, so weights drift naturally between "
+        "rebalances. Prices are rebuilt from anomaly-corrected returns, so the "
+        "TMPV demerger and TRENT reset never appear as losses.\n\n"
+        "**Coverage failures are loud**: every ticker must span the entire "
+        "requested window or the request returns 422 with "
+        "`INSUFFICIENT_COVERAGE` naming the ticker and its actual range. The "
+        "window is never silently shrunk.\n\n"
+        "The `limitations` array includes the survivorship-bias warning, "
+        "because this response compares against the index."
+    ),
+    response_description="Strategy, both baselines, their metrics, and the caveats",
+    responses={
+        422: {
+            "model": ErrorResponse,
+            "description": "Request cannot be satisfied — see `error_code`",
+        },
+    },
 )
 def run(request: BacktestRequest, db: Session = Depends(get_db)) -> BacktestResponse:
-    try:
-        comparison = run_strategy_with_baselines(
-            db,
-            tickers=request.tickers,
-            target_weights=request.target_weights,
-            start_date=request.start_date,
-            end_date=request.end_date,
-            initial_capital=request.initial_capital,
-            rebalance_frequency=request.rebalance_frequency,
-            transaction_cost_bps=request.transaction_cost_bps,
-            risk_free_rate=request.risk_free_rate,
-        )
-    except UnknownTickerError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (InsufficientCoverageError, StrategyContractError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    comparison = run_strategy_with_baselines(
+        db,
+        tickers=request.tickers,
+        target_weights=request.target_weights,
+        start_date=request.start_date,
+        end_date=request.end_date,
+        initial_capital=request.initial_capital_inr,
+        rebalance_frequency=request.rebalance_frequency,
+        transaction_cost_bps=request.transaction_cost_bps,
+        risk_free_rate=request.risk_free_rate,
+    )
 
     benchmark = None
     if comparison.buy_and_hold_nifty50 is not None:
@@ -104,10 +121,12 @@ def run(request: BacktestRequest, db: Session = Depends(get_db)) -> BacktestResp
     return BacktestResponse(
         tickers=request.tickers,
         target_weights=request.target_weights,
-        start_date=comparison.start_date,
-        end_date=comparison.end_date,
-        trading_days=comparison.trading_days,
-        initial_capital=request.initial_capital,
+        data_window=DataWindow(
+            start_date=comparison.start_date,
+            end_date=comparison.end_date,
+            trading_days=comparison.trading_days,
+        ),
+        initial_capital_inr=request.initial_capital_inr,
         rebalance_frequency=comparison.rebalance_frequency,
         transaction_cost_bps=comparison.transaction_cost_bps,
         risk_free_rate=comparison.risk_free_rate,
@@ -125,7 +144,26 @@ def run(request: BacktestRequest, db: Session = Depends(get_db)) -> BacktestResp
 @router.post(
     "/bootstrap",
     response_model=BootstrapResponse,
-    summary="Distribution of backtest outcomes across many windows or resamples",
+    summary="Bootstrapped distribution of backtest outcomes",
+    description=(
+        "Runs the strategy and both baselines over many paired windows, so the "
+        "result is a distribution rather than a point estimate.\n\n"
+        "`rolling_windows` steps a fixed-length window forward one month at a "
+        "time. `block_bootstrap` resamples blocks of consecutive days "
+        "(geometric lengths, ~21-day mean) to preserve volatility clustering — "
+        "resampling individual days would destroy it and produce falsely narrow "
+        "intervals.\n\n"
+        "The headline is `win_rates`: how often the strategy beat each baseline, "
+        "compared window by window. **Read it against the survivorship-bias and "
+        "price-index warnings in `limitations` before drawing any conclusion.**"
+    ),
+    response_description="Percentile summaries, paired win rates, and the caveats",
+    responses={
+        422: {
+            "model": ErrorResponse,
+            "description": "Request cannot be satisfied — see `error_code`",
+        },
+    },
 )
 def bootstrap(
     request: BootstrapRequest, db: Session = Depends(get_db)
@@ -145,30 +183,20 @@ def bootstrap(
         allow_short=request.strategy.allow_short,
     )
 
-    try:
-        result = bootstrap_backtest(
-            db,
-            tickers=request.tickers,
-            config=config,
-            window_years=request.window_years,
-            initial_capital=request.initial_capital,
-            rebalance_frequency=request.rebalance_frequency,
-            transaction_cost_bps=request.transaction_cost_bps,
-            risk_free_rate=request.risk_free_rate,
-            method=request.method,
-            n_resamples=request.n_resamples,
-            expected_block_days=request.expected_block_days,
-            seed=request.seed,
-        )
-    except UnknownTickerError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except (
-        InsufficientLookbackError,
-        InsufficientCoverageError,
-        StrategyContractError,
-        ValueError,
-    ) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result = bootstrap_backtest(
+        db,
+        tickers=request.tickers,
+        config=config,
+        window_years=request.window_years,
+        initial_capital=request.initial_capital_inr,
+        rebalance_frequency=request.rebalance_frequency,
+        transaction_cost_bps=request.transaction_cost_bps,
+        risk_free_rate=request.risk_free_rate,
+        method=request.method,
+        n_resamples=request.n_resamples,
+        expected_block_days=request.expected_block_days,
+        seed=request.seed,
+    )
 
     windows: list[WindowResultOut] = []
     if request.include_windows:
@@ -198,6 +226,11 @@ def bootstrap(
         method=result.method,
         strategy_kind=result.strategy_kind,
         tickers=result.tickers,
+        data_window=DataWindow(
+            start_date=result.data_start,
+            end_date=result.data_end,
+            trading_days=result.data_trading_days,
+        ),
         window_years=result.window_years,
         n_windows=result.n_windows,
         rebalance_frequency=request.rebalance_frequency,

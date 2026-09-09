@@ -18,6 +18,12 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
+from app.core.errors import (
+    InfeasibleConstraintsError,
+    InvalidParameterError,
+    OptimizationFailedError,
+)
+
 logger = logging.getLogger(__name__)
 
 TRADING_DAYS_PER_YEAR = 252
@@ -41,10 +47,6 @@ N_RANDOM_STARTS = 2
 
 _SLSQP_OPTIONS = {"maxiter": 400, "ftol": 1e-12}
 _WEIGHT_SUM_TOLERANCE = 1e-6
-
-
-class InfeasibleConstraintsError(ValueError):
-    """The requested constraints admit no portfolio at all."""
 
 
 @dataclass
@@ -80,9 +82,9 @@ def annualised_moments(
     both are simply multiplied by the number of trading days in a year.
     """
     if returns_df.empty:
-        raise ValueError("returns_df is empty — nothing to estimate from")
+        raise InvalidParameterError("returns_df is empty — nothing to estimate from")
     if len(returns_df) < 2:
-        raise ValueError(
+        raise InvalidParameterError(
             f"Need at least 2 days of returns to estimate covariance, "
             f"got {len(returns_df)}"
         )
@@ -313,7 +315,7 @@ def min_variance_portfolio(
         seed=seed,
     )
     if weights is None:
-        raise RuntimeError(
+        raise OptimizationFailedError(
             "Minimum-variance optimisation did not converge from any start"
         )
     return _as_point(weights, tickers, mu, cov, risk_free_rate)
@@ -347,7 +349,9 @@ def max_sharpe_portfolio(
         seed=seed,
     )
     if weights is None:
-        raise RuntimeError("Max-Sharpe optimisation did not converge from any start")
+        raise OptimizationFailedError(
+            "Max-Sharpe optimisation did not converge from any start"
+        )
     return _as_point(weights, tickers, mu, cov, risk_free_rate)
 
 

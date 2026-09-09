@@ -18,7 +18,7 @@ BASE_PORTFOLIO = {
         {"ticker": "TCS", "weight": 0.3},
         {"ticker": "HDFCBANK", "weight": 0.3},
     ],
-    "total_value": 1_000_000,
+    "total_value_inr": 1_000_000,
 }
 
 
@@ -89,7 +89,7 @@ def test_short_history_shrinks_window_and_names_the_constraint(client):
                 {"ticker": "RELIANCE", "weight": 0.5},
                 {"ticker": "JIOFIN", "weight": 0.5},
             ],
-            "total_value": 1_000_000,
+            "total_value_inr": 1_000_000,
         },
         lookback_days=2000,
     )
@@ -124,22 +124,23 @@ def test_bad_weights_rejected_with_a_clear_message(client):
                 {"ticker": "RELIANCE", "weight": 0.5},
                 {"ticker": "TCS", "weight": 0.3},
             ],
-            "total_value": 1_000_000,
+            "total_value_inr": 1_000_000,
         },
     )
     assert response.status_code == 422
-    assert "must sum to 1.0" in str(response.json()["detail"])
+    assert "must sum to 1.0" in response.json()["message"]
 
 
-def test_unknown_ticker_returns_404(client):
+def test_unknown_ticker_in_body_returns_422(client):
     response = _post(
         client,
         portfolio={
             "positions": [{"ticker": "NOTATICKER", "weight": 1.0}],
-            "total_value": 1_000_000,
+            "total_value_inr": 1_000_000,
         },
     )
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "UNKNOWN_TICKER"
 
 
 def test_confidence_levels_must_be_fractions(client):
@@ -233,7 +234,7 @@ def test_var_with_an_anomalous_ticker_is_not_inflated(client):
         client,
         portfolio={
             "positions": [{"ticker": "TMPV", "weight": 1.0}],
-            "total_value": 1_000_000,
+            "total_value_inr": 1_000_000,
         },
         lookback_days=504,
         n_sims=20_000,

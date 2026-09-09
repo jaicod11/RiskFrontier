@@ -7,6 +7,9 @@ import datetime as dt
 from pydantic import BaseModel, Field, model_validator
 
 from app.core.limitations import BACKTEST_LIMITATIONS
+from app.schemas.common import DataWindow
+from app.core.errors import InvalidParameterError, InvalidWeightsError
+from app.core.limits import MAX_BACKTEST_YEARS, MAX_TICKERS, enforce_max
 from app.core.tickers import to_nse_symbol
 from app.services.backtest import DEFAULT_TRANSACTION_COST_BPS
 from app.services.markowitz import DEFAULT_RISK_FREE_RATE
@@ -16,7 +19,7 @@ _WEIGHT_TOLERANCE = 1e-6
 
 class ValuePoint(BaseModel):
     date: dt.date
-    value: float
+    value_inr: float = Field(description="Portfolio value on this date, in INR")
 
 
 class PerformanceMetrics(BaseModel):
@@ -36,8 +39,8 @@ class PerformanceMetrics(BaseModel):
     n_rebalances: int = Field(
         description="Rebalance events executed, including the day-one purchase"
     )
-    start_value: float
-    end_value: float
+    start_value_inr: float
+    end_value_inr: float
     total_return: float
 
 
@@ -49,11 +52,41 @@ class BacktestSeries(BaseModel):
 
 
 class BacktestRequest(BaseModel):
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "summary": "Monthly rebalanced, 8-year window",
+                    "description": (
+                        "The response carries a `limitations` array whose first "
+                        "entry is the survivorship-bias warning: the universe is "
+                        "today's index constituents, so the comparison against "
+                        "the Nifty 50 is biased in the strategy's favour."
+                    ),
+                    "value": {
+                        "tickers": ["RELIANCE", "TCS", "HDFCBANK", "ITC"],
+                        "target_weights": {
+                            "RELIANCE": 0.25, "TCS": 0.25,
+                            "HDFCBANK": 0.25, "ITC": 0.25,
+                        },
+                        "start_date": "2018-09-10",
+                        "end_date": "2026-09-07",
+                        "initial_capital_inr": 1000000,
+                        "rebalance_frequency": "monthly",
+                        "transaction_cost_bps": 15,
+                    },
+                }
+            ]
+        }
+    }
+
     tickers: list[str] = Field(min_length=1)
     target_weights: dict[str, float]
     start_date: dt.date
     end_date: dt.date
-    initial_capital: float = Field(default=1_000_000.0, gt=0)
+    initial_capital_inr: float = Field(
+        default=1_000_000.0, gt=0, description="Starting portfolio value, in INR"
+    )
     rebalance_frequency: str = Field(default="monthly", pattern="^(monthly|quarterly)$")
     transaction_cost_bps: float = Field(
         default=DEFAULT_TRANSACTION_COST_BPS, ge=0.0, le=1000.0
@@ -63,10 +96,13 @@ class BacktestRequest(BaseModel):
     @model_validator(mode="after")
     def _validate(self) -> "BacktestRequest":
         if self.start_date >= self.end_date:
-            raise ValueError(
+            raise InvalidParameterError(
                 f"start_date ({self.start_date}) must be before "
                 f"end_date ({self.end_date})"
             )
+
+        span_years = (self.end_date - self.start_date).days / 365.25
+        enforce_max(round(span_years, 2), MAX_BACKTEST_YEARS, "date range", "years")
 
         tickers: list[str] = []
         for raw in self.tickers:
@@ -74,32 +110,36 @@ class BacktestRequest(BaseModel):
             if symbol and symbol not in tickers:
                 tickers.append(symbol)
         if not tickers:
-            raise ValueError("At least one ticker is required")
+            raise InvalidParameterError("At least one ticker is required")
+        enforce_max(len(tickers), MAX_TICKERS, "tickers")
         self.tickers = tickers
 
         weights = {to_nse_symbol(t): float(w) for t, w in self.target_weights.items()}
         if not weights:
-            raise ValueError("target_weights must not be empty")
+            raise InvalidWeightsError("target_weights must not be empty")
 
         unknown = set(weights) - set(tickers)
         if unknown:
-            raise ValueError(
+            raise InvalidWeightsError(
                 f"target_weights references tickers not in the backtest: "
-                f"{', '.join(sorted(unknown))}"
+                f"{', '.join(sorted(unknown))}",
+                details={"unexpected_tickers": sorted(unknown)},
             )
         uncovered = set(tickers) - set(weights)
         if uncovered:
-            raise ValueError(
+            raise InvalidWeightsError(
                 f"No target weight given for: {', '.join(sorted(uncovered))}. "
-                "Give every ticker a weight (use 0.0 to exclude one)."
+                "Give every ticker a weight (use 0.0 to exclude one).",
+                details={"missing_tickers": sorted(uncovered)},
             )
 
         total = sum(weights.values())
         if abs(total - 1.0) > _WEIGHT_TOLERANCE:
             breakdown = ", ".join(f"{t}={w:g}" for t, w in weights.items())
-            raise ValueError(
+            raise InvalidWeightsError(
                 f"target_weights must sum to 1.0, got {total:.6f} "
-                f"(off by {total - 1.0:+.6f}). Weights given: {breakdown}"
+                f"(off by {total - 1.0:+.6f}). Weights given: {breakdown}",
+                details={"sum": total, "expected": 1.0},
             )
         self.target_weights = weights
         return self
@@ -108,10 +148,10 @@ class BacktestRequest(BaseModel):
 class BacktestResponse(BaseModel):
     tickers: list[str]
     target_weights: dict[str, float]
-    start_date: dt.date
-    end_date: dt.date
-    trading_days: int
-    initial_capital: float
+    data_window: DataWindow = Field(
+        description="The trading days the simulation actually ran over"
+    )
+    initial_capital_inr: float
     rebalance_frequency: str
     transaction_cost_bps: float
     risk_free_rate: float

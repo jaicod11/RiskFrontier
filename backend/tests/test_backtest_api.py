@@ -35,7 +35,7 @@ BASE_REQUEST = {
     "target_weights": {"RELIANCE": 0.4, "TCS": 0.3, "HDFCBANK": 0.3},
     "start_date": START.isoformat(),
     "end_date": END.isoformat(),
-    "initial_capital": CAPITAL,
+    "initial_capital_inr": CAPITAL,
     "rebalance_frequency": "monthly",
 }
 
@@ -239,10 +239,10 @@ def test_endpoint_returns_strategy_and_both_baselines(client):
     for key in ("strategy", "buy_and_hold_same_stocks", "buy_and_hold_nifty50"):
         series = payload[key]
         assert series is not None, f"{key} missing"
-        assert len(series["values"]) == payload["trading_days"]
-        assert series["values"][0]["date"] == payload["start_date"]
-        assert series["values"][-1]["date"] == payload["end_date"]
-        assert series["metrics"]["start_value"] > 0
+        assert len(series["values"]) == payload["data_window"]["trading_days"]
+        assert series["values"][0]["date"] == payload["data_window"]["start_date"]
+        assert series["values"][-1]["date"] == payload["data_window"]["end_date"]
+        assert series["metrics"]["start_value_inr"] > 0
 
 
 def test_all_three_series_share_one_calendar(client):
@@ -313,8 +313,8 @@ def test_transaction_cost_override_is_honoured(client):
 
     assert cheap.json()["strategy"]["metrics"]["total_transaction_costs_inr"] == 0
     assert (
-        dear.json()["strategy"]["metrics"]["end_value"]
-        < cheap.json()["strategy"]["metrics"]["end_value"]
+        dear.json()["strategy"]["metrics"]["end_value_inr"]
+        < cheap.json()["strategy"]["metrics"]["end_value_inr"]
     )
 
 
@@ -341,18 +341,21 @@ def test_uncovered_window_returns_422_naming_the_ticker(client):
         start_date="2022-01-03",
     )
     assert response.status_code == 422
-    detail = str(response.json()["detail"])
-    assert "JIOFIN" in detail
-    assert "2023-08-21" in detail
+    payload = response.json()
+    assert payload["error_code"] == "INSUFFICIENT_COVERAGE"
+    assert "JIOFIN" in payload["message"]
+    assert "2023-08-21" in payload["message"]
 
 
-def test_unknown_ticker_returns_404(client):
+def test_unknown_ticker_in_body_returns_422(client):
+    """A well-formed body naming a stranger is unprocessable, not "not found"."""
     response = _post(
         client,
         tickers=["RELIANCE", "NOTATICKER"],
         target_weights={"RELIANCE": 0.5, "NOTATICKER": 0.5},
     )
-    assert response.status_code == 404
+    assert response.status_code == 422
+    assert response.json()["error_code"] == "UNKNOWN_TICKER"
 
 
 def test_weights_must_sum_to_one(client):
@@ -360,13 +363,13 @@ def test_weights_must_sum_to_one(client):
         client, target_weights={"RELIANCE": 0.4, "TCS": 0.3, "HDFCBANK": 0.2}
     )
     assert response.status_code == 422
-    assert "must sum to 1.0" in str(response.json()["detail"])
+    assert "must sum to 1.0" in response.json()["message"]
 
 
 def test_missing_weight_for_a_ticker_is_rejected(client):
     response = _post(client, target_weights={"RELIANCE": 0.5, "TCS": 0.5})
     assert response.status_code == 422
-    assert "HDFCBANK" in str(response.json()["detail"])
+    assert "HDFCBANK" in response.json()["message"]
 
 
 def test_inverted_dates_rejected(client):
